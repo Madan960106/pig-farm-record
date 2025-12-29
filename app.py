@@ -1,5 +1,5 @@
 import streamlit as st
-from st_audiorec import st_audiorec # <--- 改用這個新套件
+from st_audiorec import st_audiorec # <--- 關鍵修改：使用新套件
 import google.generativeai as genai
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -10,7 +10,6 @@ import time
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-
 st.title("🐖 養豬場語音紀錄系統 (V33)")
 
 # CSS 優化按鈕
@@ -123,7 +122,6 @@ with tab1:
         col1, col2 = st.columns(2)
         with col1:
             if st.button("⚡ 開始 AI 分析", type="primary"):
-                # 這裡直接把 wav_audio_data 傳給 AI，不需要再轉檔了
                 result = analyze_audio_gemini(wav_audio_data)
                 if result:
                     st.session_state.analyzed_data = result
@@ -133,7 +131,7 @@ with tab1:
                 st.session_state.analyzed_data = None
                 st.rerun()
 
-    # 資料確認與上傳 (同舊版邏輯)
+    # 資料確認與上傳
     if st.session_state.analyzed_data:
         st.divider()
         with st.form("confirm_form"):
@@ -156,5 +154,4 @@ with tab1:
 
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
-    # 這裡省略部分讀取代碼以節省篇幅，若需要可補上，或直接保留您原本的 tab2 代碼
-    st.write("請連接 Google Sheets 讀取數據")
+    st.write("數據看板區")
