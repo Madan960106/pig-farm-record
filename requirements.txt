@@ -1,0 +1,6 @@
+streamlit
+streamlit-audiorecorder
+google-generativeai
+gspread
+oauth2client
+pandas
