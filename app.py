@@ -1,5 +1,5 @@
 import streamlit as st
-from st_audiorec import st_audiorec
+from streamlit_mic_recorder import mic_recorder # <--- 改用這個最新套件
 import google.generativeai as genai
 import gspread
 import json
@@ -9,9 +9,9 @@ import time
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V34)")
+st.title("🐖 養豬場語音紀錄系統 (V35)")
 
-# CSS 優化按鈕
+# CSS 優化
 st.markdown("""
     <style>
     div.stButton > button:first-child {
@@ -28,7 +28,7 @@ st.markdown("""
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 
-# --- 2. 連線設定 (V34 重點更新：改用 gspread 原生驗證) ---
+# --- 2. 連線設定 ---
 try:
     genai.configure(api_key=st.secrets["GENAI_API_KEY"])
 except Exception as e:
@@ -36,7 +36,6 @@ except Exception as e:
 
 def get_gspread_client():
     try:
-        # V34 修改：直接使用 gspread 的新版驗證功能，不再需要 oauth2client
         creds_dict = dict(st.secrets["gcp_service_account"])
         client = gspread.service_account_from_dict(creds_dict)
         return client
@@ -108,11 +107,19 @@ def save_to_sheet(data_row):
 tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
-    st.info("請點擊下方麥克風錄音：")
+    st.info("請點擊下方按鈕開始錄音：")
     
-    wav_audio_data = st_audiorec()
+    # === V35 新版錄音元件 ===
+    # 這會建立一個按鈕，按下去開始錄，再按停止
+    audio = mic_recorder(
+        start_prompt="🎤 點我錄音",
+        stop_prompt="⏹️ 完成請點這",
+        just_once=True,
+        key='recorder'
+    )
 
-    if wav_audio_data is not None:
+    if audio:
+        wav_audio_data = audio['bytes']
         st.audio(wav_audio_data, format='audio/wav')
         
         col1, col2 = st.columns(2)
@@ -127,6 +134,7 @@ with tab1:
                 st.session_state.analyzed_data = None
                 st.rerun()
 
+    # 資料確認與上傳
     if st.session_state.analyzed_data:
         st.divider()
         with st.form("confirm_form"):
@@ -150,5 +158,6 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
 
