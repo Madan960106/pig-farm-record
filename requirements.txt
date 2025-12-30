@@ -1,5 +1,5 @@
 streamlit
-st-audiorec
+streamlit-mic-recorder
 google-generativeai
 gspread
 pandas
