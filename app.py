@@ -1,8 +1,7 @@
 import streamlit as st
-from st_audiorec import st_audiorec # <--- 關鍵修改：使用新套件
+from st_audiorec import st_audiorec
 import google.generativeai as genai
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 import json
 import pandas as pd
 import datetime
@@ -10,7 +9,7 @@ import time
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V33)")
+st.title("🐖 養豬場語音紀錄系統 (V34)")
 
 # CSS 優化按鈕
 st.markdown("""
@@ -29,7 +28,7 @@ st.markdown("""
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 
-# --- 2. 連線設定 ---
+# --- 2. 連線設定 (V34 更新: 移除 oauth2client，使用 gspread 原生驗證) ---
 try:
     genai.configure(api_key=st.secrets["GENAI_API_KEY"])
 except Exception as e:
@@ -37,10 +36,9 @@ except Exception as e:
 
 def get_gspread_client():
     try:
+        # 直接使用 gspread 的新版驗證功能
         creds_dict = dict(st.secrets["gcp_service_account"])
-        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-        client = gspread.authorize(creds)
+        client = gspread.service_account_from_dict(creds_dict)
         return client
     except Exception as e:
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
@@ -112,11 +110,9 @@ tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 with tab1:
     st.info("請點擊下方麥克風錄音：")
     
-    # === 新版錄音元件 ===
-    wav_audio_data = st_audiorec() # 直接取得錄音檔案 Bytes
+    wav_audio_data = st_audiorec()
 
     if wav_audio_data is not None:
-        # 顯示播放器
         st.audio(wav_audio_data, format='audio/wav')
         
         col1, col2 = st.columns(2)
@@ -131,7 +127,6 @@ with tab1:
                 st.session_state.analyzed_data = None
                 st.rerun()
 
-    # 資料確認與上傳
     if st.session_state.analyzed_data:
         st.divider()
         with st.form("confirm_form"):
@@ -155,3 +150,4 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
