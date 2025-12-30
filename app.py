@@ -28,7 +28,7 @@ st.markdown("""
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 
-# --- 2. 連線設定 (V34 更新: 移除 oauth2client，使用 gspread 原生驗證) ---
+# --- 2. 連線設定 (V34 重點更新：改用 gspread 原生驗證) ---
 try:
     genai.configure(api_key=st.secrets["GENAI_API_KEY"])
 except Exception as e:
@@ -36,7 +36,7 @@ except Exception as e:
 
 def get_gspread_client():
     try:
-        # 直接使用 gspread 的新版驗證功能
+        # V34 修改：直接使用 gspread 的新版驗證功能，不再需要 oauth2client
         creds_dict = dict(st.secrets["gcp_service_account"])
         client = gspread.service_account_from_dict(creds_dict)
         return client
@@ -150,4 +150,5 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
