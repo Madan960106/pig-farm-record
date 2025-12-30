@@ -156,8 +156,32 @@ with tab1:
                     st.rerun()
 
 with tab2:
-    if st.button("🔄 刷新"): st.rerun()
-    st.write("數據看板區")
+    st.header("📊 繁殖紀錄總表")
+    
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        if st.button("🔄 刷新數據"):
+            st.rerun()
+    
+    # 讀取 Google Sheet 的函式
+    client = get_gspread_client()
+    if client:
+        try:
+            sheet_name = st.secrets["SHEET_CONFIG"]["sheet_name"]
+            sheet = client.open(sheet_name).sheet1
+            # 讀取所有資料
+            data = sheet.get_all_records()
+            
+            if len(data) > 0:
+                df = pd.DataFrame(data)
+                # 顯示表格
+                st.dataframe(df, use_container_width=True)
+            else:
+                st.info("目前試算表中還沒有資料，請先去錄音！")
+                
+        except Exception as e:
+            st.error(f"讀取失敗，請檢查 Google Sheet 名稱或權限: {e}")
+
 
 
 
