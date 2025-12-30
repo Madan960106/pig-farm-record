@@ -51,7 +51,7 @@ def get_gspread_client():
 
 # --- 3. Gemini AI 分析 (加強診斷) ---
 def analyze_audio_gemini(audio_bytes):
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-pro')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
     prompt = f"""
@@ -196,6 +196,7 @@ with tab2:
                 
         except Exception as e:
             st.error(f"讀取失敗: {e}")
+
 
 
 
