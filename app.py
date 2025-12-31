@@ -9,7 +9,7 @@ import time
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V37 診斷版)")
+st.title("🐖 養豬場語音紀錄系統 (V38 強力膠版)")
 
 # CSS 優化
 st.markdown("""
@@ -24,11 +24,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 初始化 Session State
+# --- 2. 初始化 Session State (這是關鍵！) ---
+# 用來記住錄音檔，防止按按鈕時消失
+if 'audio_bytes' not in st.session_state:
+    st.session_state.audio_bytes = None
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 
-# --- 2. 連線設定 ---
+# --- 3. 連線設定 ---
 try:
     genai.configure(api_key=st.secrets["GENAI_API_KEY"])
 except Exception as e:
@@ -43,8 +46,8 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 3. Gemini AI 分析 (V37: 增加除錯訊息) ---
-def analyze_audio_gemini(audio_bytes):
+# --- 4. Gemini AI 分析 ---
+def analyze_audio_gemini(audio_data):
     model = genai.GenerativeModel('gemini-1.5-flash')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
@@ -62,28 +65,25 @@ def analyze_audio_gemini(audio_bytes):
     """
     
     try:
-        with st.spinner("🤖 AI 正在思考中..."):
+        with st.spinner("🤖 AI 正在分析數據... (請稍候)"):
             response = model.generate_content([
                 prompt,
-                {"mime_type": "audio/wav", "data": audio_bytes}
+                {"mime_type": "audio/wav", "data": audio_data}
             ])
             
-            # --- V37 診斷訊息: 顯示原始回覆 ---
-            raw_text = response.text
-            st.warning(f"🔍 [診斷] AI 原始回覆內容:\n{raw_text}") 
-            # -------------------------------
+            # 診斷訊息 (顯示在畫面上讓您確認 AI 有活著)
+            st.info(f"🔍 AI 原始回覆: {response.text}")
 
-            text = raw_text
+            text = response.text
             if "```json" in text:
                 text = text.replace("```json", "").replace("```", "")
             text = text.strip()
-            
             return json.loads(text)
     except Exception as e:
-        st.error(f"❌ 分析發生錯誤: {e}")
+        st.error(f"❌ 分析失敗: {e}")
         return None
 
-# --- 4. 存檔功能 ---
+# --- 5. 存檔功能 ---
 def save_to_sheet(data_row):
     client = get_gspread_client()
     if not client: return False
@@ -91,12 +91,11 @@ def save_to_sheet(data_row):
         sheet_config = st.secrets["SHEET_CONFIG"]
         sheet_name = sheet_config["sheet_name"]
         
-        # 嘗試開啟試算表
         try:
             sheet = client.open(sheet_name).sheet1
         except Exception as e:
-            st.error(f"❌ 找不到試算表或無權限: {e}")
-            st.info(f"💡 請確認已將 'client_email' 加入共用: {st.secrets['gcp_service_account']['client_email']}")
+            st.error(f"❌ 找不到試算表: {e}")
+            st.warning(f"💡 請確認已將機器人 Email 加入共用: {st.secrets['gcp_service_account']['client_email']}")
             return False
         
         due_date = ""
@@ -118,43 +117,49 @@ def save_to_sheet(data_row):
         sheet.append_row(row)
         return True
     except Exception as e:
-        st.error(f"❌ 寫入過程失敗: {e}")
+        st.error(f"❌ 寫入失敗: {e}")
         return False
 
-# --- 5. UI 介面 ---
+# --- 6. UI 介面 ---
 tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
-    st.info("請點擊下方按鈕開始錄音：")
+    st.warning("測試步驟：1.按錄音 -> 2.講話 -> 3.按停止 -> 4.等待「開始分析」按鈕出現 -> 5.點擊分析")
     
+    # 錄音元件
     audio = mic_recorder(
         start_prompt="🎤 點我錄音",
         stop_prompt="⏹️ 完成請點這",
         just_once=True,
-        key='recorder'
+        key='recorder_v38'
     )
 
+    # ⚠️ 關鍵修改：一旦錄音完成，馬上存入 Session State，死都不放手
     if audio:
-        wav_audio_data = audio['bytes']
-        st.audio(wav_audio_data, format='audio/wav')
+        st.session_state.audio_bytes = audio['bytes']
+
+    # 檢查 Session State 裡有沒有聲音檔
+    if st.session_state.audio_bytes:
+        st.audio(st.session_state.audio_bytes, format='audio/wav')
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("⚡ 開始 AI 分析", type="primary"):
-                st.write("🔄 正在傳送錄音給 Gemini...") # 診斷點
-                result = analyze_audio_gemini(wav_audio_data)
+            # 這裡按鈕按下去，因為 audio_bytes 已經在 session_state 裡，所以不會消失
+            if st.button("⚡ 開始 AI 分析 (V38)", type="primary"):
+                result = analyze_audio_gemini(st.session_state.audio_bytes)
                 if result:
                     st.session_state.analyzed_data = result
-                    st.success("✅ 解析成功！請確認下方資料：")
-                else:
-                    st.error("⚠️ AI 分析沒有回傳有效結果，請查看上方的診斷訊息。")
+        
         with col2:
              if st.button("🗑️ 清除重錄"):
+                st.session_state.audio_bytes = None
                 st.session_state.analyzed_data = None
                 st.rerun()
 
+    # 顯示分析結果
     if st.session_state.analyzed_data:
         st.divider()
+        st.success("✅ 解析成功！")
         with st.form("confirm_form"):
             d = st.session_state.analyzed_data
             c1, c2 = st.columns(2)
@@ -168,7 +173,9 @@ with tab1:
             if st.form_submit_button("✅ 確認上傳"):
                 final_data = {"date": new_date, "sow_id": new_id, "event_type": new_event, "target_value": new_val, "note": new_note}
                 if save_to_sheet(final_data):
-                    st.success("🎉 已成功儲存至 Google Sheet！")
+                    st.success("🎉 已成功儲存！")
+                    # 上傳成功後清除資料
+                    st.session_state.audio_bytes = None
                     st.session_state.analyzed_data = None
                     time.sleep(2)
                     st.rerun()
@@ -176,6 +183,7 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
 
 
