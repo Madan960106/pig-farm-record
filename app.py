@@ -9,7 +9,7 @@ import time
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V36)")
+st.title("🐖 養豬場語音紀錄系統 (V37 診斷版)")
 
 # CSS 優化
 st.markdown("""
@@ -32,7 +32,7 @@ if 'analyzed_data' not in st.session_state:
 try:
     genai.configure(api_key=st.secrets["GENAI_API_KEY"])
 except Exception as e:
-    st.error("⚠️ API Key 設定錯誤，請檢查 Streamlit Secrets。")
+    st.error(f"⚠️ API Key 設定錯誤: {e}")
 
 def get_gspread_client():
     try:
@@ -43,10 +43,9 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 3. Gemini AI 分析 (V36 更新：使用 gemini-1.5-flash) ---
+# --- 3. Gemini AI 分析 (V37: 增加除錯訊息) ---
 def analyze_audio_gemini(audio_bytes):
-    # 這裡就是關鍵修改：使用 gemini-1.5-flash
-    model = genai.GenerativeModel('gemini-1.5-flash') 
+    model = genai.GenerativeModel('gemini-1.5-flash')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
     prompt = f"""
@@ -63,19 +62,25 @@ def analyze_audio_gemini(audio_bytes):
     """
     
     try:
-        with st.spinner("🤖 AI (Flash版) 正在分析數據..."):
+        with st.spinner("🤖 AI 正在思考中..."):
             response = model.generate_content([
                 prompt,
                 {"mime_type": "audio/wav", "data": audio_bytes}
             ])
-            # 清理回傳格式
-            text = response.text
+            
+            # --- V37 診斷訊息: 顯示原始回覆 ---
+            raw_text = response.text
+            st.warning(f"🔍 [診斷] AI 原始回覆內容:\n{raw_text}") 
+            # -------------------------------
+
+            text = raw_text
             if "```json" in text:
                 text = text.replace("```json", "").replace("```", "")
             text = text.strip()
+            
             return json.loads(text)
     except Exception as e:
-        st.error(f"分析失敗，原因: {e}")
+        st.error(f"❌ 分析發生錯誤: {e}")
         return None
 
 # --- 4. 存檔功能 ---
@@ -83,8 +88,16 @@ def save_to_sheet(data_row):
     client = get_gspread_client()
     if not client: return False
     try:
-        sheet_name = st.secrets["SHEET_CONFIG"]["sheet_name"]
-        sheet = client.open(sheet_name).sheet1
+        sheet_config = st.secrets["SHEET_CONFIG"]
+        sheet_name = sheet_config["sheet_name"]
+        
+        # 嘗試開啟試算表
+        try:
+            sheet = client.open(sheet_name).sheet1
+        except Exception as e:
+            st.error(f"❌ 找不到試算表或無權限: {e}")
+            st.info(f"💡 請確認已將 'client_email' 加入共用: {st.secrets['gcp_service_account']['client_email']}")
+            return False
         
         due_date = ""
         if data_row.get("event_type") == "配種":
@@ -105,7 +118,7 @@ def save_to_sheet(data_row):
         sheet.append_row(row)
         return True
     except Exception as e:
-        st.error(f"寫入失敗: {e}")
+        st.error(f"❌ 寫入過程失敗: {e}")
         return False
 
 # --- 5. UI 介面 ---
@@ -114,7 +127,6 @@ tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 with tab1:
     st.info("請點擊下方按鈕開始錄音：")
     
-    # 錄音元件
     audio = mic_recorder(
         start_prompt="🎤 點我錄音",
         stop_prompt="⏹️ 完成請點這",
@@ -124,22 +136,23 @@ with tab1:
 
     if audio:
         wav_audio_data = audio['bytes']
-        # 這裡不顯示播放器以免佔空間，直接分析
         st.audio(wav_audio_data, format='audio/wav')
         
         col1, col2 = st.columns(2)
         with col1:
             if st.button("⚡ 開始 AI 分析", type="primary"):
+                st.write("🔄 正在傳送錄音給 Gemini...") # 診斷點
                 result = analyze_audio_gemini(wav_audio_data)
                 if result:
                     st.session_state.analyzed_data = result
-                    st.success("解析成功！")
+                    st.success("✅ 解析成功！請確認下方資料：")
+                else:
+                    st.error("⚠️ AI 分析沒有回傳有效結果，請查看上方的診斷訊息。")
         with col2:
              if st.button("🗑️ 清除重錄"):
                 st.session_state.analyzed_data = None
                 st.rerun()
 
-    # 資料確認與上傳
     if st.session_state.analyzed_data:
         st.divider()
         with st.form("confirm_form"):
@@ -155,14 +168,15 @@ with tab1:
             if st.form_submit_button("✅ 確認上傳"):
                 final_data = {"date": new_date, "sow_id": new_id, "event_type": new_event, "target_value": new_val, "note": new_note}
                 if save_to_sheet(final_data):
-                    st.success("已儲存！")
+                    st.success("🎉 已成功儲存至 Google Sheet！")
                     st.session_state.analyzed_data = None
-                    time.sleep(1)
+                    time.sleep(2)
                     st.rerun()
 
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
 
 
