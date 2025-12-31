@@ -9,7 +9,7 @@ import time
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V38 強力膠版)")
+st.title("🐖 養豬場語音紀錄系統 (V39 萬用模型版)")
 
 # CSS 優化
 st.markdown("""
@@ -24,8 +24,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. 初始化 Session State (這是關鍵！) ---
-# 用來記住錄音檔，防止按按鈕時消失
+# --- 2. 初始化 Session State ---
 if 'audio_bytes' not in st.session_state:
     st.session_state.audio_bytes = None
 if 'analyzed_data' not in st.session_state:
@@ -46,11 +45,17 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 4. Gemini AI 分析 ---
+# --- 4. Gemini AI 分析 (V39 更新: 自動切換模型) ---
 def analyze_audio_gemini(audio_data):
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    # 定義模型清單：如果第一個不行，就試第二個，依此類推
+    model_list = [
+        'gemini-1.5-flash',      # 首選：最新最快
+        'gemini-1.5-flash-001',  # 備選1：指定版本號
+        'gemini-1.5-pro',        # 備選2：更強的模型
+        'gemini-pro'             # 最後手段：舊版穩定模型
+    ]
     
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
     prompt = f"""
     你是一個專業的養豬場管理員。請聽錄音，將內容轉換為 JSON。
     參考日期: {today_str} (若說"今天"以此為準，"昨天"則減一天)。
@@ -63,25 +68,43 @@ def analyze_audio_gemini(audio_data):
     範例: "168號今天配種杜洛克" -> {{"sow_id":"168", "event_type":"配種", "target_value":"杜洛克", "date":"{today_str}", "note":""}}
     請只回傳 JSON 字串，不要有 Markdown 格式。
     """
-    
-    try:
-        with st.spinner("🤖 AI 正在分析數據... (請稍候)"):
-            response = model.generate_content([
-                prompt,
-                {"mime_type": "audio/wav", "data": audio_data}
-            ])
-            
-            # 診斷訊息 (顯示在畫面上讓您確認 AI 有活著)
-            st.info(f"🔍 AI 原始回覆: {response.text}")
 
-            text = response.text
-            if "```json" in text:
-                text = text.replace("```json", "").replace("```", "")
-            text = text.strip()
-            return json.loads(text)
-    except Exception as e:
-        st.error(f"❌ 分析失敗: {e}")
-        return None
+    # 迴圈嘗試每一個模型
+    last_error = None
+    for model_name in model_list:
+        try:
+            # 建立模型實體
+            model = genai.GenerativeModel(model_name)
+            
+            # 嘗試生成
+            with st.spinner(f"🤖 正在使用 {model_name} 分析數據..."):
+                response = model.generate_content([
+                    prompt,
+                    {"mime_type": "audio/wav", "data": audio_data}
+                ])
+                
+                # 如果成功拿到回應，處理並回傳
+                text = response.text
+                if "```json" in text:
+                    text = text.replace("```json", "").replace("```", "")
+                text = text.strip()
+                
+                # 測試是否為有效 JSON
+                result = json.loads(text)
+                
+                # 成功了！顯示診斷訊息並跳出迴圈
+                st.toast(f"✅ 成功使用模型: {model_name}", icon="🎉")
+                return result
+
+        except Exception as e:
+            # 如果失敗，記錄錯誤並試下一個
+            # st.warning(f"⚠️ 模型 {model_name} 失敗，嘗試下一個...") # 怕太吵先註解掉
+            last_error = e
+            continue
+    
+    # 如果全部都失敗
+    st.error(f"❌ 所有 AI 模型都嘗試失敗。最後一次錯誤: {last_error}")
+    return None
 
 # --- 5. 存檔功能 ---
 def save_to_sheet(data_row):
@@ -124,28 +147,24 @@ def save_to_sheet(data_row):
 tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
-    st.warning("測試步驟：1.按錄音 -> 2.講話 -> 3.按停止 -> 4.等待「開始分析」按鈕出現 -> 5.點擊分析")
+    st.info("請點擊下方按鈕開始錄音：")
     
-    # 錄音元件
     audio = mic_recorder(
         start_prompt="🎤 點我錄音",
         stop_prompt="⏹️ 完成請點這",
         just_once=True,
-        key='recorder_v38'
+        key='recorder_v39'
     )
 
-    # ⚠️ 關鍵修改：一旦錄音完成，馬上存入 Session State，死都不放手
     if audio:
         st.session_state.audio_bytes = audio['bytes']
 
-    # 檢查 Session State 裡有沒有聲音檔
     if st.session_state.audio_bytes:
         st.audio(st.session_state.audio_bytes, format='audio/wav')
         
         col1, col2 = st.columns(2)
         with col1:
-            # 這裡按鈕按下去，因為 audio_bytes 已經在 session_state 裡，所以不會消失
-            if st.button("⚡ 開始 AI 分析 (V38)", type="primary"):
+            if st.button("⚡ 開始 AI 分析 (V39)", type="primary"):
                 result = analyze_audio_gemini(st.session_state.audio_bytes)
                 if result:
                     st.session_state.analyzed_data = result
@@ -156,7 +175,6 @@ with tab1:
                 st.session_state.analyzed_data = None
                 st.rerun()
 
-    # 顯示分析結果
     if st.session_state.analyzed_data:
         st.divider()
         st.success("✅ 解析成功！")
@@ -174,7 +192,6 @@ with tab1:
                 final_data = {"date": new_date, "sow_id": new_id, "event_type": new_event, "target_value": new_val, "note": new_note}
                 if save_to_sheet(final_data):
                     st.success("🎉 已成功儲存！")
-                    # 上傳成功後清除資料
                     st.session_state.audio_bytes = None
                     st.session_state.analyzed_data = None
                     time.sleep(2)
@@ -183,6 +200,7 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
 
 
