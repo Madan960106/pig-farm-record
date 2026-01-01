@@ -9,16 +9,25 @@ import base64
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V49 多人管理版)")
+st.title("🐖 養豬場語音紀錄系統 (V50 雙重身分版)")
 
-# === V49 新增：側邊欄設定 (讓員工選擇所在區域) ===
-# 這不會影響 AI 核心，只是一個「標籤」
-st.sidebar.header("🏭 工作區域設定")
+# === V50 修改：側邊欄改為雙選單 (地點 + 人員) ===
+st.sidebar.header("🏭 現場設定")
+
+# 選單 1: 地點
 work_zone = st.sidebar.selectbox(
-    "請選擇您目前的位置/身分：",
-    ["A棟-懷孕舍", "B棟-分娩舍", "C棟-保育舍", "D棟-肉豬舍", "場長測試", "員工A", "員工B"]
+    "1️⃣ 選擇區域：",
+    ["A棟-懷孕舍", "B棟-分娩舍", "C棟-保育舍", "D棟-肉豬舍", "隔離舍"]
 )
-st.sidebar.info(f"目前標籤：{work_zone}")
+
+# 選單 2: 人員
+operator_name = st.sidebar.selectbox(
+    "2️⃣ 操作人員：",
+    ["場長", "員工A", "員工B", "員工C", "外勞A", "外勞B"]
+)
+
+st.sidebar.markdown("---")
+st.sidebar.success(f"📍 {work_zone}\n\n👤 {operator_name}")
 # ===========================================
 
 # --- 2. 初始化 Session State ---
@@ -37,7 +46,7 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 4. Gemini AI 分析 (保持 V48 核心不動) 🛡️ ---
+# --- 4. Gemini AI 分析 (核心不動) 🛡️ ---
 def analyze_audio_smart(audio_bytes):
     api_key = st.secrets["GENAI_API_KEY"]
     model_name = "gemini-2.5-flash"
@@ -51,18 +60,18 @@ def analyze_audio_smart(audio_bytes):
     你是一個專業的養豬場管理員。請將錄音內容轉換為 JSON。
     參考日期: {today_str}。
     
-    【關鍵字對照表 - 請嚴格遵守】
-    - 聽到 "離乳"、"斷奶"、"抓小豬" -> event_type 必須是 "斷奶"。
-    - 聽到 "生了"、"分娩"、"下豬" -> event_type 必須是 "分娩"。
-    - 聽到 "配種"、"授精"、"做愛" -> event_type 必須是 "配種"。
-    - 聽到 "打針"、"治療"、"疫苗" -> event_type 必須是 "醫療"。
+    【關鍵字對照表】
+    - "離乳"、"斷奶" -> "斷奶"
+    - "生了"、"分娩" -> "分娩"
+    - "配種"、"授精" -> "配種"
+    - "打針"、"治療" -> "醫療"
     
     【JSON 欄位規則】
-    1. sow_id (字串): 耳號。
-    2. event_type (字串): ["配種", "分娩", "斷奶", "醫療", "測重"]。
-    3. target_value (字串): 品種/數量/藥名。
-    4. date (YYYY-MM-DD)。
-    5. note (字串): 備註。
+    1. sow_id: 耳號。
+    2. event_type: ["配種", "分娩", "斷奶", "醫療", "測重"]。
+    3. target_value: 品種/數量/藥名。
+    4. date: YYYY-MM-DD。
+    5. note: 備註。
 
     請只回傳 JSON 字串。
     """
@@ -78,7 +87,7 @@ def analyze_audio_smart(audio_bytes):
     headers = {'Content-Type': 'application/json'}
 
     try:
-        with st.spinner(f"🤖 AI 正在判讀事件類型..."):
+        with st.spinner(f"🤖 AI 正在判讀..."):
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             if response.status_code == 200:
                 result_json = response.json()
@@ -92,8 +101,8 @@ def analyze_audio_smart(audio_bytes):
         st.error(f"❌ 連線異常: {e}")
         return None
 
-# --- 5. 存檔功能 (V49: 新增寫入「區域」欄位) ---
-def save_to_sheet(data_row, zone_tag):
+# --- 5. 存檔功能 (V50: 支援寫入地點與人員) ---
+def save_to_sheet(data_row, zone, person):
     client = get_gspread_client()
     if not client: return False
     try:
@@ -105,7 +114,7 @@ def save_to_sheet(data_row, zone_tag):
             st.error(f"❌ 找不到試算表: {e}")
             return False
         
-        # 養豬週期計算 (V48 邏輯)
+        # 養豬週期計算
         event = data_row.get("event_type")
         input_date_str = data_row.get("date")
         next_action_date = ""
@@ -138,7 +147,8 @@ def save_to_sheet(data_row, zone_tag):
             data_row.get("target_value"),
             data_row.get("note"),
             next_action_date,
-            zone_tag  # <--- V49 新增: 把側邊欄選的區域寫入 H 欄
+            zone,    # H欄: 工作區域
+            person   # I欄: 操作人員 (新欄位)
         ]
         
         sheet.append_row(row)
@@ -151,10 +161,10 @@ def save_to_sheet(data_row, zone_tag):
 tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
-    # 顯示目前的工作區域，提醒員工
-    st.info(f"📍 目前工作區域：**{work_zone}** (若需變更請點左上角 > 箭頭)")
+    # 提醒目前的設定
+    st.info(f"📍 目前設定： **{work_zone}** 由 **{operator_name}** 操作")
     
-    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v49')
+    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v50')
 
     if audio:
         st.session_state.audio_bytes = audio['bytes']
@@ -164,7 +174,7 @@ with tab1:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("⚡ 開始 AI 分析 (V49)", type="primary"):
+            if st.button("⚡ 開始 AI 分析 (V50)", type="primary"):
                 result = analyze_audio_smart(st.session_state.audio_bytes)
                 if result:
                     st.session_state.analyzed_data = result
@@ -188,14 +198,14 @@ with tab1:
             new_val = c4.text_input("數值/內容", d.get("target_value"))
             new_note = st.text_input("備註", d.get("note"))
             
-            # 這裡顯示即將寫入的區域，做最後確認
-            st.caption(f"即將寫入區域標籤: {work_zone}")
+            st.caption(f"即將寫入：{work_zone} / {operator_name}")
 
             if st.form_submit_button("✅ 確認上傳"):
                 final_data = {"date": new_date, "sow_id": new_id, "event_type": new_event, "target_value": new_val, "note": new_note}
-                # 傳入 work_zone 參數
-                if save_to_sheet(final_data, work_zone):
-                    st.success(f"🎉 資料已儲存至 {work_zone}！")
+                
+                # 傳入 兩個 側邊欄參數
+                if save_to_sheet(final_data, work_zone, operator_name):
+                    st.success(f"🎉 成功！\n\n地點：{work_zone}\n人員：{operator_name}")
                     st.session_state.audio_bytes = None
                     st.session_state.analyzed_data = None
                     time.sleep(2)
@@ -204,5 +214,6 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板將顯示於此")
+
 
 
