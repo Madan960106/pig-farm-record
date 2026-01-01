@@ -9,32 +9,22 @@ import base64
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V50 雙重身分版)")
+st.title("🐖 養豬場語音紀錄系統 (V51 連續輸入版)")
 
-# === V50 修改：側邊欄改為雙選單 (地點 + 人員) ===
+# === 側邊欄：雙重身分設定 ===
 st.sidebar.header("🏭 現場設定")
-
-# 選單 1: 地點
-work_zone = st.sidebar.selectbox(
-    "1️⃣ 選擇區域：",
-    ["A棟-懷孕舍", "B棟-分娩舍", "C棟-保育舍", "D棟-肉豬舍", "隔離舍"]
-)
-
-# 選單 2: 人員
-operator_name = st.sidebar.selectbox(
-    "2️⃣ 操作人員：",
-    ["場長", "員工A", "員工B", "員工C", "外勞A", "外勞B"]
-)
-
-st.sidebar.markdown("---")
-st.sidebar.success(f"📍 {work_zone}\n\n👤 {operator_name}")
-# ===========================================
+work_zone = st.sidebar.selectbox("1️⃣ 選擇區域：", ["A棟-懷孕舍", "B棟-分娩舍", "C棟-保育舍", "D棟-肉豬舍", "隔離舍"])
+operator_name = st.sidebar.selectbox("2️⃣ 操作人員：", ["場長", "員工A", "員工B", "員工C", "外勞A", "外勞B"])
+st.sidebar.success(f"📍 {work_zone} / 👤 {operator_name}")
 
 # --- 2. 初始化 Session State ---
 if 'audio_bytes' not in st.session_state:
     st.session_state.audio_bytes = None
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
+# V51 新增: 用來記住上一隻豬的耳號，方便連續輸入
+if 'last_sow_id' not in st.session_state:
+    st.session_state.last_sow_id = ""
 
 # --- 3. Google Sheets 連線設定 ---
 def get_gspread_client():
@@ -46,7 +36,7 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 4. Gemini AI 分析 (核心不動) 🛡️ ---
+# --- 4. Gemini AI 分析 (V51 Prompt 優化: 定義優先權) ---
 def analyze_audio_smart(audio_bytes):
     api_key = st.secrets["GENAI_API_KEY"]
     model_name = "gemini-2.5-flash"
@@ -56,17 +46,24 @@ def analyze_audio_smart(audio_bytes):
     b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
+    # V51 Prompt: 教導 AI 遇到雙重事件時的處理原則
     prompt_text = f"""
     你是一個專業的養豬場管理員。請將錄音內容轉換為 JSON。
     參考日期: {today_str}。
     
-    【關鍵字對照表】
+    【⚠️ 最高指導原則：單一事件制】
+    如果錄音中同時包含兩個事件 (例如: "分娩後打針" 或 "斷奶並治療")：
+    1. 請優先選擇「繁殖週期事件」作為 event_type (優先順序: 分娩 > 配種 > 斷奶)。
+    2. 將另一個「次要事件」(如醫療、測重) 的內容，完整寫入 note (備註) 欄位，並加上 "⚠️" 符號。
+    3. 絕對不要試圖回傳兩個 JSON，只要回傳一個最重要的。
+
+    【關鍵字對照】
     - "離乳"、"斷奶" -> "斷奶"
     - "生了"、"分娩" -> "分娩"
     - "配種"、"授精" -> "配種"
     - "打針"、"治療" -> "醫療"
     
-    【JSON 欄位規則】
+    【JSON 欄位】
     1. sow_id: 耳號。
     2. event_type: ["配種", "分娩", "斷奶", "醫療", "測重"]。
     3. target_value: 品種/數量/藥名。
@@ -87,7 +84,7 @@ def analyze_audio_smart(audio_bytes):
     headers = {'Content-Type': 'application/json'}
 
     try:
-        with st.spinner(f"🤖 AI 正在判讀..."):
+        with st.spinner(f"🤖 AI 正在判讀 (優先處理繁殖事件)..."):
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             if response.status_code == 200:
                 result_json = response.json()
@@ -101,7 +98,7 @@ def analyze_audio_smart(audio_bytes):
         st.error(f"❌ 連線異常: {e}")
         return None
 
-# --- 5. 存檔功能 (V50: 支援寫入地點與人員) ---
+# --- 5. 存檔功能 (核心不動 🛡️) ---
 def save_to_sheet(data_row, zone, person):
     client = get_gspread_client()
     if not client: return False
@@ -114,7 +111,7 @@ def save_to_sheet(data_row, zone, person):
             st.error(f"❌ 找不到試算表: {e}")
             return False
         
-        # 養豬週期計算
+        # 週期計算
         event = data_row.get("event_type")
         input_date_str = data_row.get("date")
         next_action_date = ""
@@ -131,7 +128,7 @@ def save_to_sheet(data_row, zone, person):
                 target_date = event_date + datetime.timedelta(days=5)
                 next_action_date = f"發情:{target_date.strftime('%Y-%m-%d')}"
             elif event == "醫療":
-                next_action_date = "⚠️注意停藥期"
+                next_action_date = "⚠️查藥籤" # 醫療顯示不同
         except: pass
 
         # 台灣時間
@@ -147,8 +144,8 @@ def save_to_sheet(data_row, zone, person):
             data_row.get("target_value"),
             data_row.get("note"),
             next_action_date,
-            zone,    # H欄: 工作區域
-            person   # I欄: 操作人員 (新欄位)
+            zone,
+            person
         ]
         
         sheet.append_row(row)
@@ -161,20 +158,21 @@ def save_to_sheet(data_row, zone, person):
 tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
-    # 提醒目前的設定
     st.info(f"📍 目前設定： **{work_zone}** 由 **{operator_name}** 操作")
     
-    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v50')
+    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v51')
 
     if audio:
         st.session_state.audio_bytes = audio['bytes']
+        # 錄音時清空上一次的手動殘留，但保留 last_sow_id 以防萬一
+        st.session_state.analyzed_data = None
 
-    if st.session_state.audio_bytes:
+    if st.session_state.audio_bytes and st.session_state.analyzed_data is None:
         st.audio(st.session_state.audio_bytes, format='audio/wav')
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("⚡ 開始 AI 分析 (V50)", type="primary"):
+            if st.button("⚡ 開始 AI 分析 (V51)", type="primary"):
                 result = analyze_audio_smart(st.session_state.audio_bytes)
                 if result:
                     st.session_state.analyzed_data = result
@@ -184,36 +182,36 @@ with tab1:
                 st.session_state.analyzed_data = None
                 st.rerun()
 
+    # --- 資料確認區 (包含純手動輸入模式) ---
+    # 如果有 AI 資料，用 AI 的；如果沒有，看是否要顯示「手動輸入表格」(延續上一筆)
+    
+    show_form = False
+    default_data = {}
+
     if st.session_state.analyzed_data:
-        st.divider()
-        st.success("✅ 解析成功！")
+        # 情況 A: AI 分析完成
+        d = st.session_state.analyzed_data
+        if isinstance(d, list): d = d[0]
+        default_data = d
+        show_form = True
+    elif st.session_state.last_sow_id:
+        # 情況 B: 沒錄音，但剛存完上一筆，且有保留耳號 -> 顯示空表單讓使用者補醫療
+        default_data = {
+            "date": datetime.date.today().strftime("%Y-%m-%d"),
+            "sow_id": st.session_state.last_sow_id, # 自動帶入上一隻
+            "event_type": "醫療", # 預設跳到醫療，方便補錄
+            "target_value": "",
+            "note": ""
+        }
+        st.info(f"➕ 已保留耳號 **{st.session_state.last_sow_id}**，請輸入第二筆資料 (如: 醫療)：")
+        show_form = True
+
+    if show_form:
         with st.form("confirm_form"):
-            d = st.session_state.analyzed_data
-            
             c1, c2 = st.columns(2)
-            new_date = c1.text_input("日期", d.get("date"))
-            new_id = c2.text_input("母豬耳號", d.get("sow_id"))
-            c3, c4 = st.columns(2)
-            new_event = c3.selectbox("事件", ["配種", "分娩", "斷奶", "醫療", "測重"], index=["配種", "分娩", "斷奶", "醫療", "測重"].index(d.get("event_type")) if d.get("event_type") in ["配種", "分娩", "斷奶", "醫療", "測重"] else 0)
-            new_val = c4.text_input("數值/內容", d.get("target_value"))
-            new_note = st.text_input("備註", d.get("note"))
-            
-            st.caption(f"即將寫入：{work_zone} / {operator_name}")
+            new_date = c1.text_input("日期", default_data.get("date"))
+            new_id = c2.text_input("母豬耳號", default_data.get
 
-            if st.form_submit_button("✅ 確認上傳"):
-                final_data = {"date": new_date, "sow_id": new_id, "event_type": new_event, "target_value": new_val, "note": new_note}
-                
-                # 傳入 兩個 側邊欄參數
-                if save_to_sheet(final_data, work_zone, operator_name):
-                    st.success(f"🎉 成功！\n\n地點：{work_zone}\n人員：{operator_name}")
-                    st.session_state.audio_bytes = None
-                    st.session_state.analyzed_data = None
-                    time.sleep(2)
-                    st.rerun()
-
-with tab2:
-    if st.button("🔄 刷新"): st.rerun()
-    st.write("數據看板將顯示於此")
 
 
 
