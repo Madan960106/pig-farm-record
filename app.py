@@ -1,160 +1,61 @@
 import streamlit as st
-from streamlit_mic_recorder import mic_recorder
-import gspread
-import json
-import datetime
-import time
 import requests
-import base64
+import json
 
-# --- 1. 頁面基礎設定 ---
-st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V43 誠實豆沙包版)")
+st.set_page_config(page_title="API 診斷工具", page_icon="🕵️‍♂️")
+st.title("🕵️‍♂️ Google AI 模型掃描器 (V44)")
 
-# --- 2. 初始化 Session State ---
-if 'audio_bytes' not in st.session_state:
-    st.session_state.audio_bytes = None
-if 'analyzed_data' not in st.session_state:
-    st.session_state.analyzed_data = None
-
-# --- 3. Google Sheets 連線設定 ---
-def get_gspread_client():
-    try:
-        creds_dict = dict(st.secrets["gcp_service_account"])
-        client = gspread.service_account_from_dict(creds_dict)
-        return client
-    except Exception as e:
-        st.error(f"⚠️ 無法連接 Google Sheets: {e}")
-        return None
-
-# --- 4. Gemini AI 分析 (V43: 顯示完整錯誤訊息) ---
-def analyze_audio_debug(audio_bytes):
+# 1. 取得 API Key
+try:
     api_key = st.secrets["GENAI_API_KEY"]
-    # 我們只測試最標準的模型，如果這個不過，就是 Key 的問題
-    model_name = "gemini-1.5-flash"
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-    
-    b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
-    
-    prompt_text = f"""
-    你是一個專業的養豬場管理員。請聽錄音，將內容轉換為 JSON。
-    參考日期: {today_str}。
-    範例: "168號今天配種杜洛克" -> {{"sow_id":"168", "event_type":"配種", "target_value":"杜洛克", "date":"{today_str}", "note":""}}
-    請只回傳 JSON。
-    """
+    masked_key = f"{api_key[:5]}...{api_key[-5:]}"
+    st.success(f"🔑 讀取到 API Key: {masked_key}")
+except:
+    st.error("❌ 找不到 API Key，請檢查 Secrets！")
+    st.stop()
 
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": prompt_text},
-                {"inline_data": {"mime_type": "audio/wav", "data": b64_audio}}
-            ]
-        }]
-    }
-    headers = {'Content-Type': 'application/json'}
-
+# 2. 掃描按鈕
+if st.button("🚀 開始掃描可用模型", type="primary"):
+    st.info("正在向 Google 詢問您的帳號權限...")
+    
+    # 使用 list 網址，查詢所有可用模型
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    
     try:
-        with st.spinner(f"🤖 正在測試 Key 的有效性 (使用 {model_name})..."):
-            response = requests.post(url, headers=headers, json=payload, timeout=30)
+        response = requests.get(url, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            st.balloons()
+            st.write("### 🎉 恭喜！連線成功！以下是您的鑰匙可用的模型清單：")
             
-            # --- V43 關鍵修改：無論成功失敗，都顯示結果 ---
-            if response.status_code == 200:
-                st.success("✅ 成功！您的 Key 復活了！")
-                result_json = response.json()
-                text_content = result_json['candidates'][0]['content']['parts'][0]['text']
-                clean_text = text_content.replace("```json", "").replace("```", "").strip()
-                return json.loads(clean_text)
+            # 整理並顯示模型
+            models = data.get('models', [])
+            if models:
+                valid_models = []
+                for m in models:
+                    # 我們只關心能生成內容的模型
+                    if "generateContent" in m['supportedGenerationMethods']:
+                        name = m['name'].replace("models/", "")
+                        valid_models.append(name)
+                        st.code(name)
+                
+                if not valid_models:
+                    st.warning("⚠️ 連線成功，但沒有找到支援 generateContent 的模型。")
+                else:
+                    st.success(f"共找到 {len(valid_models)} 個可用模型。請告訴我上面列出了什麼！")
             else:
-                # 失敗時，顯示 Google 說了什麼
-                st.error(f"❌ 請求被 Google 拒絕！狀態碼: {response.status_code}")
-                st.code(response.text, language="json") # 把錯誤細節印出來
-                st.warning("💡 請將上方紅色框框內的英文錯誤訊息截圖，我們就能知道是額度不夠還是權限沒開。")
-                return None
+                st.warning("⚠️ API 回傳了空的模型清單。")
+                st.json(data)
+                
+        else:
+            st.error(f"❌ 掃描失敗！狀態碼: {response.status_code}")
+            st.code(response.text)
+            st.error("這代表您的 API Key 可能有區域限制，或是該 Google 專案未啟用 API 服務。")
 
     except Exception as e:
-        st.error(f"❌ 連線異常: {e}")
-        return None
+        st.error(f"連線錯誤: {e}")
 
-# --- 5. 存檔功能 ---
-def save_to_sheet(data_row):
-    client = get_gspread_client()
-    if not client: return False
-    try:
-        sheet_config = st.secrets["SHEET_CONFIG"]
-        sheet_name = sheet_config["sheet_name"]
-        try:
-            sheet = client.open(sheet_name).sheet1
-        except Exception as e:
-            st.error(f"❌ 找不到試算表: {e}")
-            return False
-        
-        due_date = ""
-        if data_row.get("event_type") == "配種":
-            try:
-                m_date = datetime.datetime.strptime(data_row.get("date"), "%Y-%m-%d")
-                due_date = (m_date + datetime.timedelta(days=114)).strftime("%Y-%m-%d")
-            except: pass
-
-        row = [
-            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            data_row.get("date"),
-            data_row.get("sow_id"),
-            data_row.get("event_type"),
-            data_row.get("target_value"),
-            data_row.get("note"),
-            due_date
-        ]
-        sheet.append_row(row)
-        return True
-    except Exception as e:
-        st.error(f"❌ 寫入失敗: {e}")
-        return False
-
-# --- 6. UI 介面 ---
-tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
-
-with tab1:
-    st.info("請點擊下方按鈕開始錄音：")
-    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v43')
-
-    if audio:
-        st.session_state.audio_bytes = audio['bytes']
-
-    if st.session_state.audio_bytes:
-        st.audio(st.session_state.audio_bytes, format='audio/wav')
-        
-        if st.button("⚡ 開始 AI 分析 (V43)", type="primary"):
-            result = analyze_audio_debug(st.session_state.audio_bytes)
-            if result:
-                st.session_state.analyzed_data = result
-
-    if st.session_state.analyzed_data:
-        st.divider()
-        st.success("✅ 解析成功！")
-        with st.form("confirm_form"):
-            d = st.session_state.analyzed_data
-            c1, c2 = st.columns(2)
-            new_date = c1.text_input("日期", d.get("date"))
-            new_id = c2.text_input("母豬耳號", d.get("sow_id"))
-            c3, c4 = st.columns(2)
-            new_event = c3.selectbox("事件", ["配種", "分娩", "斷奶", "醫療"], index=0)
-            new_val = c4.text_input("數值/品種", d.get("target_value"))
-            new_note = st.text_input("備註", d.get("note"))
-            
-            if st.form_submit_button("✅ 確認上傳"):
-                final_data = {"date": new_date, "sow_id": new_id, "event_type": new_event, "target_value": new_val, "note": new_note}
-                if save_to_sheet(final_data):
-                    st.success("🎉 已成功儲存！")
-                    st.session_state.audio_bytes = None
-                    st.session_state.analyzed_data = None
-                    time.sleep(2)
-                    st.rerun()
-
-with tab2:
-    if st.button("🔄 刷新"): st.rerun()
-    st.write("數據看板區")
 
 
 
