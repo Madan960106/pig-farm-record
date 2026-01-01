@@ -9,7 +9,7 @@ import base64
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V45 未來科技版)")
+st.title("🐖 養豬場語音紀錄系統 (V46 台灣時區版)")
 
 # --- 2. 初始化 Session State ---
 if 'audio_bytes' not in st.session_state:
@@ -27,17 +27,13 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 4. Gemini AI 分析 (V45: 使用 gemini-2.5-flash) ---
-def analyze_audio_future(audio_bytes):
+# --- 4. Gemini AI 分析 (維持 V45 成功邏輯) ---
+def analyze_audio_final(audio_bytes):
     api_key = st.secrets["GENAI_API_KEY"]
+    model_name = "gemini-2.5-flash" # 使用確認可用的模型
     
-    # ✅ 關鍵修改：使用您清單中確認可用的 "gemini-2.5-flash"
-    model_name = "gemini-2.5-flash"
-    
-    # 組合 API 網址
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     
-    # 轉檔音訊
     b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
@@ -65,29 +61,21 @@ def analyze_audio_future(audio_bytes):
     headers = {'Content-Type': 'application/json'}
 
     try:
-        with st.spinner(f"🤖 正在使用 {model_name} 分析數據..."):
+        with st.spinner(f"🤖 AI 正在分析..."):
             response = requests.post(url, headers=headers, json=payload, timeout=30)
-            
             if response.status_code == 200:
                 result_json = response.json()
-                try:
-                    text_content = result_json['candidates'][0]['content']['parts'][0]['text']
-                    clean_text = text_content.replace("```json", "").replace("```", "").strip()
-                    return json.loads(clean_text)
-                except Exception as parse_err:
-                    st.error(f"❌ 解析失敗: {parse_err}")
-                    st.json(result_json) # 顯示原始資料除錯
-                    return None
+                text_content = result_json['candidates'][0]['content']['parts'][0]['text']
+                clean_text = text_content.replace("```json", "").replace("```", "").strip()
+                return json.loads(clean_text)
             else:
-                st.error(f"❌ 請求失敗 (Code {response.status_code})")
-                st.code(response.text)
+                st.error(f"❌ 請求失敗: {response.status_code}")
                 return None
-
     except Exception as e:
         st.error(f"❌ 連線異常: {e}")
         return None
 
-# --- 5. 存檔功能 ---
+# --- 5. 存檔功能 (V46 修改：修正台灣時間) ---
 def save_to_sheet(data_row):
     client = get_gspread_client()
     if not client: return False
@@ -100,6 +88,7 @@ def save_to_sheet(data_row):
             st.error(f"❌ 找不到試算表: {e}")
             return False
         
+        # 預產期計算 (114天)
         due_date = ""
         if data_row.get("event_type") == "配種":
             try:
@@ -107,14 +96,20 @@ def save_to_sheet(data_row):
                 due_date = (m_date + datetime.timedelta(days=114)).strftime("%Y-%m-%d")
             except: pass
 
+        # === V46 關鍵修改：取得台灣時間 (UTC+8) ===
+        utc_now = datetime.datetime.utcnow()
+        taiwan_time = utc_now + datetime.timedelta(hours=8)
+        timestamp_str = taiwan_time.strftime("%Y-%m-%d %H:%M:%S")
+        # =======================================
+
         row = [
-            datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            data_row.get("date"),
-            data_row.get("sow_id"),
-            data_row.get("event_type"),
-            data_row.get("target_value"),
-            data_row.get("note"),
-            due_date
+            timestamp_str,          # A欄: 台灣時間
+            data_row.get("date"),   # B欄: 事件日期
+            data_row.get("sow_id"), # C欄: 耳號
+            data_row.get("event_type"), # D欄: 事件
+            data_row.get("target_value"), # E欄: 數值
+            data_row.get("note"),   # F欄: 備註
+            due_date                # G欄: 預產期
         ]
         sheet.append_row(row)
         return True
@@ -127,7 +122,7 @@ tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
     st.info("請點擊下方按鈕開始錄音：")
-    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v45')
+    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v46')
 
     if audio:
         st.session_state.audio_bytes = audio['bytes']
@@ -137,11 +132,10 @@ with tab1:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("⚡ 開始 AI 分析 (V45)", type="primary"):
-                result = analyze_audio_future(st.session_state.audio_bytes)
+            if st.button("⚡ 開始 AI 分析 (V46)", type="primary"):
+                result = analyze_audio_final(st.session_state.audio_bytes)
                 if result:
                     st.session_state.analyzed_data = result
-        
         with col2:
              if st.button("🗑️ 清除重錄"):
                 st.session_state.audio_bytes = None
@@ -173,19 +167,3 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
