@@ -9,20 +9,7 @@ import time
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V39 萬用模型版)")
-
-# CSS 優化
-st.markdown("""
-    <style>
-    div.stButton > button:first-child {
-        height: 3.5em;
-        font-size: 20px;
-        font-weight: bold;
-        width: 100%;
-        border-radius: 10px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.title("🐖 養豬場語音紀錄系統 (V40 版本檢查版)")
 
 # --- 2. 初始化 Session State ---
 if 'audio_bytes' not in st.session_state:
@@ -30,7 +17,11 @@ if 'audio_bytes' not in st.session_state:
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 
-# --- 3. 連線設定 ---
+# --- 3. 系統檢查 (V40 新增) ---
+# 這行會顯示目前安裝的 AI 套件版本，必須是 0.8.3 以上才行
+st.sidebar.info(f"🔧 系統診斷資訊:\nGenAI 版本: {genai.__version__}")
+
+# --- 4. 連線設定 ---
 try:
     genai.configure(api_key=st.secrets["GENAI_API_KEY"])
 except Exception as e:
@@ -45,17 +36,12 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 4. Gemini AI 分析 (V39 更新: 自動切換模型) ---
+# --- 5. Gemini AI 分析 ---
 def analyze_audio_gemini(audio_data):
-    # 定義模型清單：如果第一個不行，就試第二個，依此類推
-    model_list = [
-        'gemini-1.5-flash',      # 首選：最新最快
-        'gemini-1.5-flash-001',  # 備選1：指定版本號
-        'gemini-1.5-pro',        # 備選2：更強的模型
-        'gemini-pro'             # 最後手段：舊版穩定模型
-    ]
-    
+    # V40: 直接鎖定最新的 Flash 模型，不繞彎路
+    model_name = 'gemini-1.5-flash'
     today_str = datetime.date.today().strftime("%Y-%m-%d")
+    
     prompt = f"""
     你是一個專業的養豬場管理員。請聽錄音，將內容轉換為 JSON。
     參考日期: {today_str} (若說"今天"以此為準，"昨天"則減一天)。
@@ -66,59 +52,37 @@ def analyze_audio_gemini(audio_data):
     4. date (日期): YYYY-MM-DD。
     5. note (備註): 細節。
     範例: "168號今天配種杜洛克" -> {{"sow_id":"168", "event_type":"配種", "target_value":"杜洛克", "date":"{today_str}", "note":""}}
-    請只回傳 JSON 字串，不要有 Markdown 格式。
+    請只回傳 JSON 字串。
     """
-
-    # 迴圈嘗試每一個模型
-    last_error = None
-    for model_name in model_list:
-        try:
-            # 建立模型實體
-            model = genai.GenerativeModel(model_name)
-            
-            # 嘗試生成
-            with st.spinner(f"🤖 正在使用 {model_name} 分析數據..."):
-                response = model.generate_content([
-                    prompt,
-                    {"mime_type": "audio/wav", "data": audio_data}
-                ])
-                
-                # 如果成功拿到回應，處理並回傳
-                text = response.text
-                if "```json" in text:
-                    text = text.replace("```json", "").replace("```", "")
-                text = text.strip()
-                
-                # 測試是否為有效 JSON
-                result = json.loads(text)
-                
-                # 成功了！顯示診斷訊息並跳出迴圈
-                st.toast(f"✅ 成功使用模型: {model_name}", icon="🎉")
-                return result
-
-        except Exception as e:
-            # 如果失敗，記錄錯誤並試下一個
-            # st.warning(f"⚠️ 模型 {model_name} 失敗，嘗試下一個...") # 怕太吵先註解掉
-            last_error = e
-            continue
     
-    # 如果全部都失敗
-    st.error(f"❌ 所有 AI 模型都嘗試失敗。最後一次錯誤: {last_error}")
-    return None
+    try:
+        model = genai.GenerativeModel(model_name)
+        with st.spinner(f"🤖 正在使用 {model_name} 分析..."):
+            response = model.generate_content([
+                prompt,
+                {"mime_type": "audio/wav", "data": audio_data}
+            ])
+            
+            text = response.text.replace("```json", "").replace("```", "").strip()
+            return json.loads(text)
+            
+    except Exception as e:
+        # V40: 顯示完整的錯誤訊息
+        st.error(f"❌ 分析失敗！\n錯誤原因: {e}")
+        st.warning("💡 如果錯誤是 404 Not Found，代表軟體版本過舊，請執行第三步「刪除重建」。")
+        return None
 
-# --- 5. 存檔功能 ---
+# --- 6. 存檔功能 ---
 def save_to_sheet(data_row):
     client = get_gspread_client()
     if not client: return False
     try:
         sheet_config = st.secrets["SHEET_CONFIG"]
         sheet_name = sheet_config["sheet_name"]
-        
         try:
             sheet = client.open(sheet_name).sheet1
         except Exception as e:
             st.error(f"❌ 找不到試算表: {e}")
-            st.warning(f"💡 請確認已將機器人 Email 加入共用: {st.secrets['gcp_service_account']['client_email']}")
             return False
         
         due_date = ""
@@ -143,37 +107,22 @@ def save_to_sheet(data_row):
         st.error(f"❌ 寫入失敗: {e}")
         return False
 
-# --- 6. UI 介面 ---
+# --- 7. UI 介面 ---
 tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
     st.info("請點擊下方按鈕開始錄音：")
-    
-    audio = mic_recorder(
-        start_prompt="🎤 點我錄音",
-        stop_prompt="⏹️ 完成請點這",
-        just_once=True,
-        key='recorder_v39'
-    )
+    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v40')
 
     if audio:
         st.session_state.audio_bytes = audio['bytes']
 
     if st.session_state.audio_bytes:
         st.audio(st.session_state.audio_bytes, format='audio/wav')
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("⚡ 開始 AI 分析 (V39)", type="primary"):
-                result = analyze_audio_gemini(st.session_state.audio_bytes)
-                if result:
-                    st.session_state.analyzed_data = result
-        
-        with col2:
-             if st.button("🗑️ 清除重錄"):
-                st.session_state.audio_bytes = None
-                st.session_state.analyzed_data = None
-                st.rerun()
+        if st.button("⚡ 開始 AI 分析 (V40)", type="primary"):
+            result = analyze_audio_gemini(st.session_state.audio_bytes)
+            if result:
+                st.session_state.analyzed_data = result
 
     if st.session_state.analyzed_data:
         st.divider()
@@ -200,6 +149,7 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
 
 
