@@ -4,12 +4,12 @@ import gspread
 import json
 import datetime
 import time
-import requests  # 新增：用於發送 HTTP 請求
-import base64    # 新增：用於編碼音訊
+import requests  # 用於發送 HTTP 請求
+import base64    # 用於編碼音訊
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V41 直連版)")
+st.title("🐖 養豬場語音紀錄系統 (V42 堅若磐石版)")
 
 # --- 2. 初始化 Session State ---
 if 'audio_bytes' not in st.session_state:
@@ -27,18 +27,23 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 4. Gemini AI 分析 (全新邏輯：REST API) ---
-def analyze_audio_direct(audio_bytes):
-    # 1. 準備 API 金鑰和網址
+# --- 4. Gemini AI 分析 (Dev + QA 聯合開發：多模型輪詢機制) ---
+def analyze_audio_with_fallback(audio_bytes):
     api_key = st.secrets["GENAI_API_KEY"]
-    # 直接指定使用 v1beta 的 gemini-1.5-flash 模型
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
-    # 2. 將音訊轉為 Base64 字串 (API 要求格式)
+    # 這是我們的「模型敢死隊」清單
+    # 程式會依序嘗試，直到有一個成功為止
+    models_to_try = [
+        "gemini-1.5-flash",       # 首選：最新最快
+        "gemini-1.5-flash-001",   # 備選：指定版本
+        "gemini-1.5-pro",         # 備選：更強大的版本
+        "gemini-pro"              # 最後防線：最穩定的舊版 (幾乎保證可用)
+    ]
+    
+    # 將音訊轉為 Base64
     b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
-    
-    # 3. 準備提示詞
     today_str = datetime.date.today().strftime("%Y-%m-%d")
+    
     prompt_text = f"""
     你是一個專業的養豬場管理員。請聽錄音，將內容轉換為 JSON。
     參考日期: {today_str} (若說"今天"以此為準，"昨天"則減一天)。
@@ -49,53 +54,59 @@ def analyze_audio_direct(audio_bytes):
     4. date (日期): YYYY-MM-DD。
     5. note (備註): 細節。
     範例: "168號今天配種杜洛克" -> {{"sow_id":"168", "event_type":"配種", "target_value":"杜洛克", "date":"{today_str}", "note":""}}
-    請只回傳 JSON 字串，不要包含 ```json 等標記。
+    請只回傳 JSON 字串，不要包含 Markdown 標記。
     """
 
-    # 4. 構建 JSON Payload (這是原本 SDK 幫我們做的事，現在手動做)
     payload = {
         "contents": [{
             "parts": [
                 {"text": prompt_text},
-                {
-                    "inline_data": {
-                        "mime_type": "audio/wav",
-                        "data": b64_audio
-                    }
-                }
+                {"inline_data": {"mime_type": "audio/wav", "data": b64_audio}}
             ]
         }]
     }
-
     headers = {'Content-Type': 'application/json'}
 
-    try:
-        with st.spinner("🤖 正在透過雲端直連分析..."):
-            # 發送 POST 請求
-            response = requests.post(url, headers=headers, json=payload)
+    # 開始輪詢模型
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        
+        try:
+            # 顯示目前進度，讓使用者安心
+            msg = st.toast(f"🔄 正在嘗試模型: {model_name}...")
             
-            # 檢查 HTTP 狀態碼
-            if response.status_code != 200:
-                st.error(f"❌ API 請求失敗 (Code {response.status_code}): {response.text}")
-                return None
+            response = requests.post(url, headers=headers, json=payload, timeout=30) # 設定 30秒超時，防止卡死
             
-            # 解析回應
-            result_json = response.json()
+            if response.status_code == 200:
+                # 成功了！
+                st.success(f"✅ 成功連線！使用模型: {model_name}")
+                
+                result_json = response.json()
+                try:
+                    text_content = result_json['candidates'][0]['content']['parts'][0]['text']
+                    clean_text = text_content.replace("```json", "").replace("```", "").strip()
+                    return json.loads(clean_text)
+                except Exception as parse_err:
+                    st.warning(f"⚠️ 模型 {model_name} 回傳格式怪怪的，嘗試下一個...")
+                    continue # 格式不對，換下一個模型試試
             
-            # 嘗試提取文字內容 (Gemini 的回應結構很深)
-            try:
-                text_content = result_json['candidates'][0]['content']['parts'][0]['text']
-                # 清理 Markdown 標記
-                clean_text = text_content.replace("```json", "").replace("```", "").strip()
-                return json.loads(clean_text)
-            except (KeyError, IndexError, json.JSONDecodeError) as parse_err:
-                st.error(f"❌ 解析回傳資料失敗: {parse_err}")
-                st.warning(f"原始回傳: {result_json}")
-                return None
+            elif response.status_code == 404:
+                # 這就是您之前遇到的錯誤，我們直接忽略，換下一個
+                print(f"模型 {model_name} 找不到 (404)，跳過。")
+                continue
+                
+            else:
+                # 其他錯誤 (如 400, 500)，記錄下來但繼續嘗試
+                print(f"模型 {model_name} 發生錯誤: {response.status_code}")
+                continue
 
-    except Exception as e:
-        st.error(f"❌ 連線發生錯誤: {e}")
-        return None
+        except Exception as e:
+            print(f"連線異常: {e}")
+            continue
+            
+    # 如果迴圈跑完都沒結果
+    st.error("❌ 所有 AI 模型都嘗試過了，但全部失敗。請檢查 API Key 是否有啟用 Generative Language API，或者網路是否被阻擋。")
+    return None
 
 # --- 5. 存檔功能 ---
 def save_to_sheet(data_row):
@@ -137,7 +148,8 @@ tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
     st.info("請點擊下方按鈕開始錄音：")
-    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v41')
+    # QA 建議：Key 不要一直換，固定一個名稱避免元件重置
+    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_final')
 
     if audio:
         st.session_state.audio_bytes = audio['bytes']
@@ -147,9 +159,9 @@ with tab1:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("⚡ 開始 AI 分析 (V41)", type="primary"):
-                # 使用新的直連函式
-                result = analyze_audio_direct(st.session_state.audio_bytes)
+            if st.button("⚡ 開始 AI 分析 (V42)", type="primary"):
+                # 使用堅若磐石版函式
+                result = analyze_audio_with_fallback(st.session_state.audio_bytes)
                 if result:
                     st.session_state.analyzed_data = result
         
@@ -184,6 +196,7 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
 
 
