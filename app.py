@@ -9,7 +9,7 @@ import base64
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V51.2 語法修復版)")
+st.title("🐖 養豬場語音紀錄系統 (V52 分娩資訊歸位版)")
 
 # === 側邊欄：雙重身分設定 ===
 st.sidebar.header("🏭 現場設定")
@@ -36,7 +36,7 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 4. Gemini AI 分析 (核心不動) ---
+# --- 4. Gemini AI 分析 (V52: 修改 Prompt 邏輯) ---
 def analyze_audio_smart(audio_bytes):
     api_key = st.secrets["GENAI_API_KEY"]
     model_name = "gemini-2.5-flash"
@@ -46,27 +46,33 @@ def analyze_audio_smart(audio_bytes):
     b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
     today_str = datetime.date.today().strftime("%Y-%m-%d")
     
+    # V52 Prompt: 特別指定分娩的資訊寫入規則
     prompt_text = f"""
     你是一個專業的養豬場管理員。請將錄音內容轉換為 JSON。
     參考日期: {today_str}。
     
     【⚠️ 最高指導原則：單一事件制】
-    如果錄音中同時包含兩個事件 (例如: "分娩後打針" 或 "斷奶並治療")：
-    1. 請優先選擇「繁殖週期事件」作為 event_type (優先順序: 分娩 > 配種 > 斷奶)。
-    2. 將另一個「次要事件」(如醫療、測重) 的內容，完整寫入 note (備註) 欄位，並加上 "⚠️" 符號。
+    如果錄音中同時包含兩個事件，請優先選擇「繁殖週期事件」(分娩 > 配種 > 斷奶)，將次要事件寫入備註。
     
-    【關鍵字對照】
-    - "離乳"、"斷奶" -> "斷奶"
-    - "生了"、"分娩" -> "分娩"
-    - "配種"、"授精" -> "配種"
-    - "打針"、"治療" -> "醫療"
+    【欄位填寫規則 - 請嚴格遵守】
+    1. 遇到 "分娩" (生了、下豬) 事件：
+       - target_value (數值/對象): 請留空 ""。
+       - note (備註): 請將「出生數量」(如12頭) 以及「健康狀況」(如弱仔、健康) 全部寫在這裡。
     
-    【JSON 欄位】
+    2. 遇到 "配種" 事件：
+       - target_value: 填入公豬品種 (如: 杜洛克)。
+       - note: 其他備註。
+
+    3. 遇到 "斷奶"、"醫療"、"測重"：
+       - target_value: 填入數量、藥名或重量。
+       - note: 其他備註。
+
+    【JSON 結構】
     1. sow_id: 耳號。
     2. event_type: ["配種", "分娩", "斷奶", "醫療", "測重"]。
-    3. target_value: 品種/數量/藥名。
+    3. target_value: 對應上述規則。
     4. date: YYYY-MM-DD。
-    5. note: 備註。
+    5. note: 對應上述規則。
 
     請只回傳 JSON 字串。
     """
@@ -156,7 +162,7 @@ tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 with tab1:
     st.info(f"📍 目前設定： **{work_zone}** 由 **{operator_name}** 操作")
     
-    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v51_2')
+    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v52')
 
     if audio:
         st.session_state.audio_bytes = audio['bytes']
@@ -167,7 +173,7 @@ with tab1:
         
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("⚡ 開始 AI 分析 (V51.2)", type="primary"):
+            if st.button("⚡ 開始 AI 分析 (V52)", type="primary"):
                 result = analyze_audio_smart(st.session_state.audio_bytes)
                 if result:
                     st.session_state.analyzed_data = result
@@ -187,7 +193,6 @@ with tab1:
         default_data = d
         show_form = True
     elif st.session_state.last_sow_id:
-        # 手動補錄模式
         default_data = {
             "date": datetime.date.today().strftime("%Y-%m-%d"),
             "sow_id": st.session_state.last_sow_id,
@@ -201,12 +206,8 @@ with tab1:
     if show_form:
         with st.form("confirm_form"):
             c1, c2 = st.columns(2)
-            # 使用 .get("key", "") 確保如果是 None 會變成空字串，避免報錯
             new_date = c1.text_input("日期", default_data.get("date", ""))
-            
-            # --- 之前報錯的就是這一行，已修正括號 ---
             new_id = c2.text_input("母豬耳號", default_data.get("sow_id", ""))
-            # --------------------------------------
 
             c3, c4 = st.columns(2)
             event_options = ["配種", "分娩", "斷奶", "醫療", "測重"]
@@ -255,6 +256,7 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板將顯示於此")
+
 
 
 
