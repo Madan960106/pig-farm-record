@@ -1,15 +1,15 @@
 import streamlit as st
 from streamlit_mic_recorder import mic_recorder
-import google.generativeai as genai
 import gspread
 import json
-import pandas as pd
 import datetime
 import time
+import requests  # 新增：用於發送 HTTP 請求
+import base64    # 新增：用於編碼音訊
 
 # --- 1. 頁面基礎設定 ---
 st.set_page_config(page_title="母豬繁殖紀錄", page_icon="🐖", layout="wide")
-st.title("🐖 養豬場語音紀錄系統 (V40 版本檢查版)")
+st.title("🐖 養豬場語音紀錄系統 (V41 直連版)")
 
 # --- 2. 初始化 Session State ---
 if 'audio_bytes' not in st.session_state:
@@ -17,16 +17,7 @@ if 'audio_bytes' not in st.session_state:
 if 'analyzed_data' not in st.session_state:
     st.session_state.analyzed_data = None
 
-# --- 3. 系統檢查 (V40 新增) ---
-# 這行會顯示目前安裝的 AI 套件版本，必須是 0.8.3 以上才行
-st.sidebar.info(f"🔧 系統診斷資訊:\nGenAI 版本: {genai.__version__}")
-
-# --- 4. 連線設定 ---
-try:
-    genai.configure(api_key=st.secrets["GENAI_API_KEY"])
-except Exception as e:
-    st.error(f"⚠️ API Key 設定錯誤: {e}")
-
+# --- 3. Google Sheets 連線設定 ---
 def get_gspread_client():
     try:
         creds_dict = dict(st.secrets["gcp_service_account"])
@@ -36,13 +27,19 @@ def get_gspread_client():
         st.error(f"⚠️ 無法連接 Google Sheets: {e}")
         return None
 
-# --- 5. Gemini AI 分析 ---
-def analyze_audio_gemini(audio_data):
-    # V40: 直接鎖定最新的 Flash 模型，不繞彎路
-    model_name = 'gemini-1.5-flash'
-    today_str = datetime.date.today().strftime("%Y-%m-%d")
+# --- 4. Gemini AI 分析 (全新邏輯：REST API) ---
+def analyze_audio_direct(audio_bytes):
+    # 1. 準備 API 金鑰和網址
+    api_key = st.secrets["GENAI_API_KEY"]
+    # 直接指定使用 v1beta 的 gemini-1.5-flash 模型
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     
-    prompt = f"""
+    # 2. 將音訊轉為 Base64 字串 (API 要求格式)
+    b64_audio = base64.b64encode(audio_bytes).decode('utf-8')
+    
+    # 3. 準備提示詞
+    today_str = datetime.date.today().strftime("%Y-%m-%d")
+    prompt_text = f"""
     你是一個專業的養豬場管理員。請聽錄音，將內容轉換為 JSON。
     參考日期: {today_str} (若說"今天"以此為準，"昨天"則減一天)。
     規則：
@@ -52,27 +49,55 @@ def analyze_audio_gemini(audio_data):
     4. date (日期): YYYY-MM-DD。
     5. note (備註): 細節。
     範例: "168號今天配種杜洛克" -> {{"sow_id":"168", "event_type":"配種", "target_value":"杜洛克", "date":"{today_str}", "note":""}}
-    請只回傳 JSON 字串。
+    請只回傳 JSON 字串，不要包含 ```json 等標記。
     """
-    
+
+    # 4. 構建 JSON Payload (這是原本 SDK 幫我們做的事，現在手動做)
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt_text},
+                {
+                    "inline_data": {
+                        "mime_type": "audio/wav",
+                        "data": b64_audio
+                    }
+                }
+            ]
+        }]
+    }
+
+    headers = {'Content-Type': 'application/json'}
+
     try:
-        model = genai.GenerativeModel(model_name)
-        with st.spinner(f"🤖 正在使用 {model_name} 分析..."):
-            response = model.generate_content([
-                prompt,
-                {"mime_type": "audio/wav", "data": audio_data}
-            ])
+        with st.spinner("🤖 正在透過雲端直連分析..."):
+            # 發送 POST 請求
+            response = requests.post(url, headers=headers, json=payload)
             
-            text = response.text.replace("```json", "").replace("```", "").strip()
-            return json.loads(text)
+            # 檢查 HTTP 狀態碼
+            if response.status_code != 200:
+                st.error(f"❌ API 請求失敗 (Code {response.status_code}): {response.text}")
+                return None
             
+            # 解析回應
+            result_json = response.json()
+            
+            # 嘗試提取文字內容 (Gemini 的回應結構很深)
+            try:
+                text_content = result_json['candidates'][0]['content']['parts'][0]['text']
+                # 清理 Markdown 標記
+                clean_text = text_content.replace("```json", "").replace("```", "").strip()
+                return json.loads(clean_text)
+            except (KeyError, IndexError, json.JSONDecodeError) as parse_err:
+                st.error(f"❌ 解析回傳資料失敗: {parse_err}")
+                st.warning(f"原始回傳: {result_json}")
+                return None
+
     except Exception as e:
-        # V40: 顯示完整的錯誤訊息
-        st.error(f"❌ 分析失敗！\n錯誤原因: {e}")
-        st.warning("💡 如果錯誤是 404 Not Found，代表軟體版本過舊，請執行第三步「刪除重建」。")
+        st.error(f"❌ 連線發生錯誤: {e}")
         return None
 
-# --- 6. 存檔功能 ---
+# --- 5. 存檔功能 ---
 def save_to_sheet(data_row):
     client = get_gspread_client()
     if not client: return False
@@ -107,22 +132,32 @@ def save_to_sheet(data_row):
         st.error(f"❌ 寫入失敗: {e}")
         return False
 
-# --- 7. UI 介面 ---
+# --- 6. UI 介面 ---
 tab1, tab2 = st.tabs(["🎙️ 現場錄音", "📊 數據看板"])
 
 with tab1:
     st.info("請點擊下方按鈕開始錄音：")
-    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v40')
+    audio = mic_recorder(start_prompt="🎤 點我錄音", stop_prompt="⏹️ 完成請點這", just_once=True, key='recorder_v41')
 
     if audio:
         st.session_state.audio_bytes = audio['bytes']
 
     if st.session_state.audio_bytes:
         st.audio(st.session_state.audio_bytes, format='audio/wav')
-        if st.button("⚡ 開始 AI 分析 (V40)", type="primary"):
-            result = analyze_audio_gemini(st.session_state.audio_bytes)
-            if result:
-                st.session_state.analyzed_data = result
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("⚡ 開始 AI 分析 (V41)", type="primary"):
+                # 使用新的直連函式
+                result = analyze_audio_direct(st.session_state.audio_bytes)
+                if result:
+                    st.session_state.analyzed_data = result
+        
+        with col2:
+             if st.button("🗑️ 清除重錄"):
+                st.session_state.audio_bytes = None
+                st.session_state.analyzed_data = None
+                st.rerun()
 
     if st.session_state.analyzed_data:
         st.divider()
@@ -149,6 +184,7 @@ with tab1:
 with tab2:
     if st.button("🔄 刷新"): st.rerun()
     st.write("數據看板區")
+
 
 
 
