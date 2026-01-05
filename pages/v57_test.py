@@ -83,7 +83,7 @@ user_text = st.text_area("請輸入語音內容 (模擬)", height=100,
                         placeholder="例如：測試01號打針安默西林，測試02號分娩10頭")
 
 if st.button("AI 解析"):
-    model = genai.GenerativeModel('gemini-2.0-flash-exp') # 確保模型名稱正確
+    model = genai.GenerativeModel('gemini-1.5-flash') # 確保模型名稱正確
     
     if not user_text:
         st.warning("請先輸入內容")
