@@ -20,7 +20,7 @@ try:
     
     if api_key:
         genai.configure(api_key=api_key)
-        # 使用最穩定的模型 (若遇到 429 額度限制，請稍等幾秒再試)
+        # 使用最穩定的模型
         model = genai.GenerativeModel('gemini-flash-latest') 
     else:
         st.error("❌ 找不到 GEMINI_API_KEY")
@@ -172,4 +172,15 @@ if 'batch_data' in st.session_state:
                     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     rows_to_upload = []
                     for index, row in edited_df.iterrows():
-                        one_row = [current_time, str(row['Date']), str(row['
+                        # --- 這裡就是剛剛出錯的地方，請確保這行是完整的 ---
+                        one_row = [current_time, str(row['Date']), str(row['EarTag']), str(row['Event']), str(row['Value_E']), str(row['Notes_F']), str(row['NextStage_G']), str(row['Zone_H']), str(row['Operator_I'])]
+                        rows_to_upload.append(one_row)
+                    
+                    sheet.append_rows(rows_to_upload)
+                    st.toast(f"🎉 成功上傳 {len(rows_to_upload)} 筆！")
+                    del st.session_state['batch_data']
+                    del st.session_state['user_input_content']
+                    st.rerun() # 上傳後自動刷新
+                    
+                except Exception as e:
+                    st.error(f"上傳錯誤：{e}")
