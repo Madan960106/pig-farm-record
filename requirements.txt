@@ -1,4 +1,8 @@
 streamlit
-streamlit-mic-recorder
 gspread
+pandas
 requests
+streamlit-mic-recorder
+google-generativeai  <-- 這是我們剛加的
+oauth2client         <-- 建議加上這個，防止下一個報錯
+
