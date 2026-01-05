@@ -22,7 +22,7 @@ try:
     if api_key:
         genai.configure(api_key=api_key)
         # ★★★ 這裡改成您清單中確認存在的型號 ★★★
-        model = genai.GenerativeModel('gemini-2.0-flash') 
+        model = genai.GenerativeModel('gemini-2.0-flash-lite') 
     else:
         st.error("❌ 找不到 GEMINI_API_KEY，請檢查 Secrets 設定 (建議放在第一行)")
         st.stop()
