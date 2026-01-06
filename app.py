@@ -1,14 +1,15 @@
 import streamlit as st
 import pandas as pd
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
+import pytz # 用於處理時區
 import google.generativeai as genai
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_mic_recorder import speech_to_text
 
 # ==========================================
-# 1. 雲端版連線設定
+# 1. 雲端版連線設定 (核心不變)
 # ==========================================
 try:
     # --- A. 設定 Gemini API Key ---
@@ -20,7 +21,7 @@ try:
     
     if api_key:
         genai.configure(api_key=api_key)
-        # 使用最穩定的模型
+        # 使用最穩定的模型 (若遇到 429 額度限制，請稍等幾秒再試)
         model = genai.GenerativeModel('gemini-flash-latest') 
     else:
         st.error("❌ 找不到 GEMINI_API_KEY")
@@ -49,31 +50,38 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 核心 Prompt
+# 2. 核心 Prompt (已針對您的需求優化)
 # ==========================================
 PROMPT_BATCH = """
 你是一個養豬場語音助理。使用者會一次口述多隻豬的事件。
 請將語音內容拆解，並輸出為一個 JSON Array (陣列)。
 
 規則：
-1. **F欄 (Notes_F)**：
-   - 分娩：將「活仔數」、「死胎」等數量資訊放入此欄。
-   - 斷奶/離乳：將「離乳數量」放入此欄。
-   - 健康狀況：如「發燒」、「跛腳」放入此欄。
-   - **E欄 (Value_E)** 對於上述事件請留空。
+1. **事件名稱標準化**：
+   - 使用者說「斷奶」或「離乳」，一律輸出為「離乳」。
+   - 包含事件：「分娩」、「離乳」、「配種」、「醫療」、「死亡」。
 
-2. **E欄 (Value_E)**：
-   - 配種：將「公豬品種」或「精液號碼」放入此欄。
-   - 醫療/打針：將「藥物名稱」或「劑量」放入此欄。
+2. **F欄 (Notes_F) 處理規則**：
+   - **分娩**：放入「活仔數」、「死胎」等數量。**警告：若使用者未口述數量，此欄必須留空，嚴禁自行填寫數字。**
+   - **離乳**：放入「離乳數量」。**警告：若使用者未口述數量，此欄必須留空。**
+   - **死亡**：放入「死亡原因」或「死亡數量」。
+   - **健康/醫療**：如「發燒」、「跛腳」放入此欄。
 
-3. **邏輯判斷**：
-   - 若一句話包含多個耳號(如"101和102都斷奶")，請拆成兩個獨立的 Object。
+3. **E欄 (Value_E) 處理規則**：
+   - **配種**：將「公豬品種」或「精液號碼」放入此欄。
+   - **醫療/打針**：將「藥物名稱」或「劑量」放入此欄。
+   - 其他事件此欄留空。
+
+4. **邏輯判斷**：
+   - 若一句話包含多個耳號(如"101和102都離乳")，請拆成兩個獨立的 Object。
    - 若未提及日期，預設為今日。
+   - **NextStage_G 欄位請全部留空字串 ""，後端程式會自動計算。**
 
 輸出範例：
 [
-  {"Date": "2024-01-01", "EarTag": "001", "Event": "分娩", "Value_E": "", "Notes_F": "活仔10頭", "NextStage_G": "2024-01-29"},
-  {"Date": "2024-01-01", "EarTag": "002", "Event": "配種", "Value_E": "杜洛克", "Notes_F": "", "NextStage_G": "2024-04-25"}
+  {"Date": "2024-01-01", "EarTag": "001", "Event": "分娩", "Value_E": "", "Notes_F": "活仔10頭", "NextStage_G": ""},
+  {"Date": "2024-01-01", "EarTag": "002", "Event": "離乳", "Value_E": "", "Notes_F": "", "NextStage_G": ""},
+  {"Date": "2024-01-01", "EarTag": "003", "Event": "配種", "Value_E": "杜洛克", "Notes_F": "", "NextStage_G": ""}
 ]
 直接輸出 JSON，不要 Markdown 標記。
 """
@@ -81,9 +89,9 @@ PROMPT_BATCH = """
 # ==========================================
 # 3. 介面設計 (UI)
 # ==========================================
-st.set_page_config(page_title="養豬場語音紀錄 V57", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄系統 (V57 正式版)")
-st.info("模式：點擊錄音 ➡ AI 解析 ➡ 批量上傳")
+st.set_page_config(page_title="養豬場語音紀錄 V57 (優化版)", page_icon="🐖")
+st.title("🐖 養豬場語音紀錄系統 (V57 優化版)")
+st.info("模式：點擊錄音 ➡ AI 解析 ➡ 自動計算預產期 ➡ 批量上傳")
 
 # 側邊欄
 with st.sidebar:
@@ -126,16 +134,39 @@ if st.button("🤖 AI 解析", type="primary"):
     if not user_text:
         st.warning("請先錄音或輸入內容")
     else:
-        with st.spinner("AI 正在拆解資料中..."):
+        with st.spinner("AI 正在拆解資料並計算日期..."):
             try:
+                # 設定台北時區
+                taipei_tz = pytz.timezone('Asia/Taipei')
+                today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
+                
                 # 呼叫 Gemini
-                full_prompt = [PROMPT_BATCH, f"今天是 {datetime.now().strftime('%Y-%m-%d')}。內容：{user_text}"]
+                full_prompt = [PROMPT_BATCH, f"今天是 {today_date}。內容：{user_text}"]
                 response = model.generate_content(full_prompt)
                 cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
                 data_list = json.loads(cleaned_text)
                 
-                # 處理資料
+                # 處理資料 (加入日期計算邏輯)
                 df = pd.DataFrame(data_list)
+                
+                # --- [新增功能] Python 自動計算配種提醒日期 ---
+                if 'NextStage_G' not in df.columns:
+                    df['NextStage_G'] = ""
+
+                for index, row in df.iterrows():
+                    if row['Event'] == '配種':
+                        try:
+                            # 解析日期
+                            event_date = datetime.strptime(row['Date'], "%Y-%m-%d")
+                            # 計算日期
+                            check_date = event_date + timedelta(days=25) # 超音波
+                            due_date = event_date + timedelta(days=114)  # 預產期
+                            # 填入欄位
+                            df.at[index, 'NextStage_G'] = f"測孕:{check_date.strftime('%m/%d')} 預產:{due_date.strftime('%m/%d')}"
+                        except Exception as date_err:
+                            print(f"日期計算錯誤: {date_err}")
+
+                # 補上 UI 欄位
                 df['Operator_I'] = operator
                 df['Zone_H'] = zone
                 
@@ -169,10 +200,12 @@ if 'batch_data' in st.session_state:
         if st.button("✅ 確認上傳", type="primary"):
             with st.spinner("寫入 Google Sheet..."):
                 try:
-                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    # [優化] 使用台北時間作為紀錄時間
+                    taipei_tz = pytz.timezone('Asia/Taipei')
+                    current_time = datetime.now(taipei_tz).strftime("%Y-%m-%d %H:%M:%S")
+                    
                     rows_to_upload = []
                     for index, row in edited_df.iterrows():
-                        # --- 這裡就是剛剛出錯的地方，請確保這行是完整的 ---
                         one_row = [current_time, str(row['Date']), str(row['EarTag']), str(row['Event']), str(row['Value_E']), str(row['Notes_F']), str(row['NextStage_G']), str(row['Zone_H']), str(row['Operator_I'])]
                         rows_to_upload.append(one_row)
                     
@@ -180,7 +213,7 @@ if 'batch_data' in st.session_state:
                     st.toast(f"🎉 成功上傳 {len(rows_to_upload)} 筆！")
                     del st.session_state['batch_data']
                     del st.session_state['user_input_content']
-                    st.rerun() # 上傳後自動刷新
+                    st.rerun() 
                     
                 except Exception as e:
                     st.error(f"上傳錯誤：{e}")
