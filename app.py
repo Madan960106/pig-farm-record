@@ -12,7 +12,6 @@ from streamlit_mic_recorder import speech_to_text
 # 1. 雲端版連線設定
 # ==========================================
 try:
-    # --- A. 設定 Gemini API Key ---
     api_key = None
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
@@ -26,7 +25,6 @@ try:
         st.error("❌ 找不到 GEMINI_API_KEY")
         st.stop()
 
-    # --- B. 連接 Google Sheet ---
     if "gcp_service_account" in st.secrets:
         creds_dict = st.secrets["gcp_service_account"]
     else:
@@ -48,42 +46,42 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 核心 Prompt (針對「超音波」口語優化)
+# 2. 核心 Prompt (V59: 超音波正名 & 公豬欄位)
 # ==========================================
 PROMPT_BATCH = """
 你是一個養豬場語音助理。請將語音內容拆解為 JSON Array。
 
 規則：
-1. **事件名稱標準化**：
-   - 關鍵字 **「超音波」** 對應事件 **「測孕」**。
-   - 其他事件：分娩、離乳(取代斷奶)、配種、醫療、死亡。
+1. **事件名稱標準化 (D欄)**：
+   - 關鍵字「超音波」、「測孕」➡ 統一輸出 Event 為 **「超音波」**。
+   - 關鍵字「斷奶」、「離乳」➡ 統一輸出 Event 為 **「離乳」**。
+   - 其他：分娩、配種、醫療、死亡。
 
-2. **J欄 (PregnancyResult_J) 超音波判讀**：
-   - 當使用者提到「超音波」時，請分析後面的結果。
-   - 若聽到：**Yes、有、有過、有懷孕、OK、+** -> J欄填入 **"Yes"**。
-   - 若聽到：**No、沒有、沒過、空胎、沒懷孕、-** -> J欄填入 **"No"**。
+2. **數值欄位定義 (E欄 Value_E)**：
+   - **配種**：**必須**在此欄填入「配種公豬耳號」或「精液號碼」。
+   - **醫療**：填入「藥物名稱」。
    - 其他事件此欄留空。
 
-3. **F欄 (Notes_F) 備註自動化**：
-   - **測孕(超音波)**：若 J欄判定為 "No"，**必須**在此欄加上 "❌ 未懷孕，待發情重配"。
-   - **分娩**：放入「活仔數」、「死胎」。若未口述數量，此欄必須留空。
-   - **離乳**：放入「離乳數量」。若未口述數量，此欄必須留空。
+3. **判讀結果 (J欄 PregnancyResult_J)**：
+   - 僅當事件為「超音波」時填寫。
+   - 聽到：Yes、有、有過、有懷孕、OK、+ ➡ 填入 **"Yes"**。
+   - 聽到：No、沒有、沒過、空胎、沒懷孕、- ➡ 填入 **"No"**。
+
+4. **備註欄位 (F欄 Notes_F)**：
+   - **超音波**：若 J欄為 "No"，必須加上 "❌ 未懷孕，待發情重配"。
+   - **分娩**：放入「活仔數」、「死胎」。(若無數據留空)
+   - **離乳**：放入「離乳數量」。(若無數據留空)
    - **死亡**：放入「死亡原因」或數量。
 
-4. **E欄 (Value_E) 數值規則**：
-   - **配種**：放入「公豬品種」或「精液號碼」。
-   - **醫療**：放入「藥物名稱」或「劑量」。
-   - 其他留空。
-
 5. **邏輯判斷**：
-   - 支援多耳號拆解。
+   - 支援多耳號拆解 (如 "101和102號...")。
    - 未提日期預設今日。
    - NextStage_G 全部留空字串。
 
 輸出範例：
 [
-  {"Date": "2024-01-01", "EarTag": "050", "Event": "測孕", "Value_E": "", "Notes_F": "", "NextStage_G": "", "PregnancyResult_J": "Yes"},
-  {"Date": "2024-01-01", "EarTag": "052", "Event": "測孕", "Value_E": "", "Notes_F": "❌ 未懷孕，待發情重配", "NextStage_G": "", "PregnancyResult_J": "No"}
+  {"Date": "2024-01-01", "EarTag": "050", "Event": "超音波", "Value_E": "", "Notes_F": "", "NextStage_G": "", "PregnancyResult_J": "Yes"},
+  {"Date": "2024-01-01", "EarTag": "101", "Event": "配種", "Value_E": "L12", "Notes_F": "", "NextStage_G": "", "PregnancyResult_J": ""}
 ]
 直接輸出 JSON。
 """
@@ -91,9 +89,9 @@ PROMPT_BATCH = """
 # ==========================================
 # 3. 介面設計 (UI)
 # ==========================================
-st.set_page_config(page_title="養豬場語音紀錄 V57+", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V57+ 超音波版)")
-st.info("模式：點擊錄音 ➡ 唸出「50號超音波Yes」 ➡ AI 解析")
+st.set_page_config(page_title="養豬場語音紀錄 V59", page_icon="🐖")
+st.title("🐖 養豬場語音紀錄 (V59 生涯準備版)")
+st.info("模式：點擊錄音 ➡ 唸出「89-610配種L12」或「50號超音波Yes」")
 
 # 側邊欄
 with st.sidebar:
@@ -122,7 +120,7 @@ user_text = st.text_area(
     "識別結果：", 
     value=st.session_state['user_input_content'], 
     height=100,
-    placeholder="例：50號超音波Yes，52號超音波No，103號離乳..."
+    placeholder="例：89-610號配種L12，50號超音波Yes..."
 )
 
 if user_text != st.session_state['user_input_content']:
@@ -133,7 +131,7 @@ if st.button("🤖 AI 解析", type="primary"):
     if not user_text:
         st.warning("請先錄音或輸入內容")
     else:
-        with st.spinner("AI 正在解析超音波結果..."):
+        with st.spinner("AI 正在解析並格式化..."):
             try:
                 # 設定台北時區
                 taipei_tz = pytz.timezone('Asia/Taipei')
@@ -164,6 +162,7 @@ if st.button("🤖 AI 解析", type="primary"):
                 df['Operator_I'] = operator
                 df['Zone_H'] = zone
                 
+                # 欄位順序確保
                 expected_cols = ['Date', 'EarTag', 'Event', 'Value_E', 'Notes_F', 'NextStage_G', 'Zone_H', 'Operator_I', 'PregnancyResult_J']
                 for c in expected_cols:
                     if c not in df.columns:
