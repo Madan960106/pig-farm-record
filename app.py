@@ -37,14 +37,15 @@ try:
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # 讀取 Sheet 設定，若無則使用預設
+    # 讀取 Sheet 設定
     if "SHEET_CONFIG" in st.secrets and "sheet_url" in st.secrets["SHEET_CONFIG"]:
          SHEET_URL = st.secrets["SHEET_CONFIG"]["sheet_url"]
     else:
-         # 請確認這裡的 URL 是您正確的 Google Sheet 網址
+         # ★★★ 請確認這裡的 URL 是您正確的 Google Sheet 網址 ★★★
          SHEET_URL = "https://docs.google.com/spreadsheets/d/1u_8UrS_D3F6T_fhmIHPeNfaBCzKusTafTzwZGUNsEmQ/edit"
     
-    sheet = client.open_by_url(SHEET_URL).sheet1
+    sheet = client.open_by_url(SHEET_URL).worksheet("工作表1") 
+    # 注意：這裡我強制指定讀取 '工作表1'，確保對應您的 Sheet 名稱
 
 except Exception as e:
     st.error(f"連線設定錯誤：{e}")
@@ -83,6 +84,7 @@ PROMPT_BATCH = """
 
 5. **邏輯判斷**：
    - 支援多耳號拆解。
+   - 若耳號包含「測試」二字，請保留或去除皆可，以辨識出的數字為主。
    - 未提日期預設今日。
    - NextStage_G 全部留空字串。
 
@@ -210,7 +212,7 @@ if 'batch_data' in st.session_state:
                         one_row = [
                             current_time, 
                             str(row['Date']), 
-                            str(row['EarTag']), 
+                            str(row['EarTag']), # 確保上傳時轉為文字字串
                             str(row['Event']), 
                             str(row['Value_E']), 
                             str(row['Notes_F']), 
