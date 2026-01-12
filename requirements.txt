@@ -1,7 +1,7 @@
 streamlit
-gspread
 pandas
-requests
-streamlit-mic-recorder
 google-generativeai
+gspread
 oauth2client
+streamlit-mic-recorder
+pytz
