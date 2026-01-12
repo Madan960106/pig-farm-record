@@ -50,14 +50,15 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. AI 核心函式 (鎖定 1.5 Flash 版)
+# 2. AI 核心函式 (鎖定 2.0 Flash 實驗版)
 # ==========================================
 def call_gemini_api(prompt_text):
     """
-    使用 Requests 直接呼叫 Gemini 1.5 Flash API。
-    這是目前 Google 最穩定且免費額度最寬鬆的模型。
+    使用 Requests 直接呼叫 Gemini 2.0 Flash Experimental API。
+    根據除錯紀錄，使用者的帳號能識別此模型。
     """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # 🟢 關鍵修正：鎖定 gemini-2.0-flash-exp
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={api_key}"
     
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -69,9 +70,9 @@ def call_gemini_api(prompt_text):
     try:
         response = requests.post(url, headers=headers, json=payload)
         
-        # 如果是 429 錯誤，印出更友善的提示
+        # 針對 429 額度不足的特別提示
         if response.status_code == 429:
-            st.error("⛔ 額度限制：這把 API Key 的免費額度已用完，或專案未啟用計費。請依照 SOP 申請新的 Key。")
+            st.error("⛔ 額度限制 (429)：這把鑰匙的額度已用完。請確認您是否已在 AI Studio 申請了【新專案】的鑰匙。")
             return None
             
         response.raise_for_status() 
@@ -131,8 +132,8 @@ PROMPT_BATCH = """
 # ==========================================
 # 4. 介面設計 (UI)
 # ==========================================
-st.set_page_config(page_title="養豬場語音紀錄 V61", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V61 Flash版)")
+st.set_page_config(page_title="養豬場語音紀錄 V62", page_icon="🐖")
+st.title("🐖 養豬場語音紀錄 (V62 2.0版)")
 st.info("模式：點擊錄音 ➡ AI 自動校正 D/L/Y 品系 ➡ 批量上傳")
 
 # 側邊欄
@@ -187,6 +188,7 @@ if st.button("🤖 AI 解析", type="primary"):
                     
                     df = pd.DataFrame(data_list)
                     
+                    # --- 自動計算邏輯 ---
                     if 'NextStage_G' not in df.columns: df['NextStage_G'] = ""
                     if 'PregnancyResult_J' not in df.columns: df['PregnancyResult_J'] = ""
 
@@ -199,9 +201,11 @@ if st.button("🤖 AI 解析", type="primary"):
                                 df.at[index, 'NextStage_G'] = f"測孕:{check_date.strftime('%m/%d')} 預產:{due_date.strftime('%m/%d')}"
                             except: pass
                     
+                    # 補上 UI 欄位
                     df['Operator_I'] = operator
                     df['Zone_H'] = zone
                     
+                    # 欄位順序確保
                     expected_cols = ['Date', 'EarTag', 'Event', 'Value_E', 'Notes_F', 'NextStage_G', 'Zone_H', 'Operator_I', 'PregnancyResult_J']
                     for c in expected_cols:
                         if c not in df.columns:
