@@ -1,3 +1,4 @@
+
 import streamlit as st
 import pandas as pd
 import json
@@ -50,14 +51,15 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. AI 核心函式 (改用 Direct API)
+# 2. AI 核心函式 (Direct API - Pro版)
 # ==========================================
 def call_gemini_api(prompt_text):
     """
-    使用 Requests 直接呼叫 Gemini 1.5 Flash API，避開 Python 套件版本問題。
+    使用 Requests 直接呼叫 Gemini API，避開 Python 套件版本問題。
+    修正：改用 gemini-pro 以確保相容性。
     """
-    # 使用最新的 gemini-1.5-flash 模型
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    # 🟢 修正點：將模型改回 gemini-pro，解決 404 問題
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
     
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -68,17 +70,13 @@ def call_gemini_api(prompt_text):
     
     try:
         response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status() # 檢查是否有 404/500 錯誤
+        response.raise_for_status() 
         
         result = response.json()
-        # 解析回傳的文字
         return result['candidates'][0]['content']['parts'][0]['text']
         
     except Exception as e:
-        # 如果失敗，印出詳細錯誤以便除錯
         st.error(f"AI 連線失敗: {e}")
-        if 'response' in locals():
-            st.code(response.text) # 顯示 Google 回傳的錯誤訊息
         return None
 
 # ==========================================
@@ -131,7 +129,7 @@ PROMPT_BATCH = """
 # 4. 介面設計 (UI)
 # ==========================================
 st.set_page_config(page_title="養豬場語音紀錄 V61", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V61 Direct版)")
+st.title("🐖 養豬場語音紀錄 (V61 Direct-Pro版)")
 st.info("模式：點擊錄音 ➡ AI 自動校正 D/L/Y 品系 ➡ 批量上傳")
 
 # 側邊欄
@@ -177,10 +175,7 @@ if st.button("🤖 AI 解析", type="primary"):
                 taipei_tz = pytz.timezone('Asia/Taipei')
                 today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
                 
-                # 組合 Prompt
                 full_prompt = f"{PROMPT_BATCH}\n今天是 {today_date}。內容：{user_text}"
-                
-                # 呼叫我們自己寫的函式
                 ai_response_text = call_gemini_api(full_prompt)
                 
                 if ai_response_text:
@@ -189,7 +184,6 @@ if st.button("🤖 AI 解析", type="primary"):
                     
                     df = pd.DataFrame(data_list)
                     
-                    # --- 自動計算邏輯 ---
                     if 'NextStage_G' not in df.columns: df['NextStage_G'] = ""
                     if 'PregnancyResult_J' not in df.columns: df['PregnancyResult_J'] = ""
 
@@ -202,11 +196,9 @@ if st.button("🤖 AI 解析", type="primary"):
                                 df.at[index, 'NextStage_G'] = f"測孕:{check_date.strftime('%m/%d')} 預產:{due_date.strftime('%m/%d')}"
                             except: pass
                     
-                    # 補上 UI 欄位
                     df['Operator_I'] = operator
                     df['Zone_H'] = zone
                     
-                    # 欄位順序確保
                     expected_cols = ['Date', 'EarTag', 'Event', 'Value_E', 'Notes_F', 'NextStage_G', 'Zone_H', 'Operator_I', 'PregnancyResult_J']
                     for c in expected_cols:
                         if c not in df.columns:
