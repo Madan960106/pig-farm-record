@@ -21,7 +21,8 @@ try:
     
     if api_key:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-flash-latest') 
+        # 改用目前最穩定的模型名稱
+        model = genai.GenerativeModel('gemini-1.5-flash') 
     else:
         st.error("❌ 找不到 GEMINI_API_KEY")
         st.stop()
@@ -41,6 +42,7 @@ try:
     else:
          SHEET_URL = "https://docs.google.com/spreadsheets/d/1u_8UrS_D3F6T_fhmIHPeNfaBCzKusTafTzwZGUNsEmQ/edit"
     
+    # 這裡強制指定工作表名稱，避免讀錯
     sheet = client.open_by_url(SHEET_URL).worksheet("工作表1")
 
 except Exception as e:
@@ -48,7 +50,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 核心 Prompt (V61: 公豬品系 L/D/Y 強效矯正版)
+# 2. 核心 Prompt (V61.1: 公豬品系 L/D/Y 強效矯正版)
 # ==========================================
 PROMPT_BATCH = """
 你是一個養豬場語音助理。請將語音內容拆解為 JSON Array。
