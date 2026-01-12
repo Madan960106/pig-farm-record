@@ -1,32 +1,27 @@
 import streamlit as st
 import pandas as pd
 import json
+import requests
 from datetime import datetime, timedelta
 import pytz
-import google.generativeai as genai
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_mic_recorder import speech_to_text
 
 # ==========================================
-# 1. 雲端版連線設定 (讀取 Secrets)
+# 1. 雲端版連線設定
 # ==========================================
 try:
-    # --- A. 設定 Gemini API Key ---
+    # --- A. 取得 API Key ---
     api_key = None
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
     
-    if api_key:
-        genai.configure(api_key=api_key)
-        # 🟢【穩定版核心】使用 gemini-pro，配合 0.7.2 版套件，確保穩定不報錯
-        model = genai.GenerativeModel('gemini-pro') 
-    else:
+    if not api_key:
         st.error("❌ 找不到 GEMINI_API_KEY，請檢查 Secrets 設定。")
         st.stop()
 
     # --- B. 連接 Google Sheet ---
-    # 優先讀取 secrets 裡的 gcp_service_account 區塊
     if "gcp_service_account" in st.secrets:
         creds_dict = dict(st.secrets["gcp_service_account"])
     else:
@@ -38,16 +33,13 @@ try:
     client = gspread.authorize(creds)
     
     # --- C. 開啟試算表 ---
-    # 嘗試從 Secrets 讀取網址 (sheet_url) 或名稱 (sheet_name)
     sheet_url = None
     if "SHEET_CONFIG" in st.secrets and "sheet_url" in st.secrets["SHEET_CONFIG"]:
          sheet_url = st.secrets["SHEET_CONFIG"]["sheet_url"]
     
-    # 如果有網址就用網址開，沒有就用預設名稱開 (建議用網址最準)
     if sheet_url:
         sheet = client.open_by_url(sheet_url).worksheet("工作表1")
     else:
-        # 預設開啟名稱 (若您改過檔名，這裡要跟著改)
         sheet_name = "2026母豬紀錄表" 
         if "SHEET_CONFIG" in st.secrets and "sheet_name" in st.secrets["SHEET_CONFIG"]:
              sheet_name = st.secrets["SHEET_CONFIG"]["sheet_name"]
@@ -55,11 +47,42 @@ try:
 
 except Exception as e:
     st.error(f"連線設定錯誤：{e}")
-    st.info("💡 提示：請檢查 Secrets 內容是否與 JSON 檔一致，且試算表名稱正確。")
     st.stop()
 
 # ==========================================
-# 2. 核心 Prompt (V61.5: 穩定版+公豬辨識)
+# 2. AI 核心函式 (改用 Direct API)
+# ==========================================
+def call_gemini_api(prompt_text):
+    """
+    使用 Requests 直接呼叫 Gemini 1.5 Flash API，避開 Python 套件版本問題。
+    """
+    # 使用最新的 gemini-1.5-flash 模型
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
+    
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt_text}]
+        }]
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status() # 檢查是否有 404/500 錯誤
+        
+        result = response.json()
+        # 解析回傳的文字
+        return result['candidates'][0]['content']['parts'][0]['text']
+        
+    except Exception as e:
+        # 如果失敗，印出詳細錯誤以便除錯
+        st.error(f"AI 連線失敗: {e}")
+        if 'response' in locals():
+            st.code(response.text) # 顯示 Google 回傳的錯誤訊息
+        return None
+
+# ==========================================
+# 3. Prompt 設定
 # ==========================================
 PROMPT_BATCH = """
 你是一個養豬場語音助理。請將語音內容拆解為 JSON Array。
@@ -105,10 +128,10 @@ PROMPT_BATCH = """
 """
 
 # ==========================================
-# 3. 介面設計 (UI)
+# 4. 介面設計 (UI)
 # ==========================================
 st.set_page_config(page_title="養豬場語音紀錄 V61", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V61 穩定版)")
+st.title("🐖 養豬場語音紀錄 (V61 Direct版)")
 st.info("模式：點擊錄音 ➡ AI 自動校正 D/L/Y 品系 ➡ 批量上傳")
 
 # 側邊欄
@@ -154,46 +177,50 @@ if st.button("🤖 AI 解析", type="primary"):
                 taipei_tz = pytz.timezone('Asia/Taipei')
                 today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
                 
-                full_prompt = [PROMPT_BATCH, f"今天是 {today_date}。內容：{user_text}"]
-                response = model.generate_content(full_prompt)
-                cleaned_text = response.text.replace("```json", "").replace("```", "").strip()
-                data_list = json.loads(cleaned_text)
+                # 組合 Prompt
+                full_prompt = f"{PROMPT_BATCH}\n今天是 {today_date}。內容：{user_text}"
                 
-                df = pd.DataFrame(data_list)
+                # 呼叫我們自己寫的函式
+                ai_response_text = call_gemini_api(full_prompt)
                 
-                # --- 自動計算邏輯 ---
-                if 'NextStage_G' not in df.columns: df['NextStage_G'] = ""
-                if 'PregnancyResult_J' not in df.columns: df['PregnancyResult_J'] = ""
+                if ai_response_text:
+                    cleaned_text = ai_response_text.replace("```json", "").replace("```", "").strip()
+                    data_list = json.loads(cleaned_text)
+                    
+                    df = pd.DataFrame(data_list)
+                    
+                    # --- 自動計算邏輯 ---
+                    if 'NextStage_G' not in df.columns: df['NextStage_G'] = ""
+                    if 'PregnancyResult_J' not in df.columns: df['PregnancyResult_J'] = ""
 
-                for index, row in df.iterrows():
-                    # 配種計算
-                    if row['Event'] == '配種':
-                        try:
-                            event_date = datetime.strptime(row['Date'], "%Y-%m-%d")
-                            check_date = event_date + timedelta(days=25)
-                            due_date = event_date + timedelta(days=114)
-                            df.at[index, 'NextStage_G'] = f"測孕:{check_date.strftime('%m/%d')} 預產:{due_date.strftime('%m/%d')}"
-                        except: pass
-                
-                # 補上 UI 欄位
-                df['Operator_I'] = operator
-                df['Zone_H'] = zone
-                
-                # 欄位順序確保
-                expected_cols = ['Date', 'EarTag', 'Event', 'Value_E', 'Notes_F', 'NextStage_G', 'Zone_H', 'Operator_I', 'PregnancyResult_J']
-                for c in expected_cols:
-                    if c not in df.columns:
-                        df[c] = ""
-                df = df[expected_cols]
-                
-                st.session_state['batch_data'] = df
-                st.success(f"成功辨識 {len(df)} 筆資料！")
+                    for index, row in df.iterrows():
+                        if row['Event'] == '配種':
+                            try:
+                                event_date = datetime.strptime(row['Date'], "%Y-%m-%d")
+                                check_date = event_date + timedelta(days=25)
+                                due_date = event_date + timedelta(days=114)
+                                df.at[index, 'NextStage_G'] = f"測孕:{check_date.strftime('%m/%d')} 預產:{due_date.strftime('%m/%d')}"
+                            except: pass
+                    
+                    # 補上 UI 欄位
+                    df['Operator_I'] = operator
+                    df['Zone_H'] = zone
+                    
+                    # 欄位順序確保
+                    expected_cols = ['Date', 'EarTag', 'Event', 'Value_E', 'Notes_F', 'NextStage_G', 'Zone_H', 'Operator_I', 'PregnancyResult_J']
+                    for c in expected_cols:
+                        if c not in df.columns:
+                            df[c] = ""
+                    df = df[expected_cols]
+                    
+                    st.session_state['batch_data'] = df
+                    st.success(f"成功辨識 {len(df)} 筆資料！")
                 
             except Exception as e:
                 st.error(f"解析失敗：{e}")
 
 # ==========================================
-# 4. 確認與上傳區
+# 5. 確認與上傳區
 # ==========================================
 if 'batch_data' in st.session_state:
     st.subheader("📋 資料預覽")
