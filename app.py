@@ -21,7 +21,6 @@ try:
     
     if api_key:
         genai.configure(api_key=api_key)
-        # 使用最穩定的模型
         model = genai.GenerativeModel('gemini-flash-latest') 
     else:
         st.error("❌ 找不到 GEMINI_API_KEY")
@@ -37,62 +36,59 @@ try:
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
-    # 讀取 Sheet 設定
     if "SHEET_CONFIG" in st.secrets and "sheet_url" in st.secrets["SHEET_CONFIG"]:
          SHEET_URL = st.secrets["SHEET_CONFIG"]["sheet_url"]
     else:
-         # ★★★ 請確認這裡的 URL 是您正確的 Google Sheet 網址 ★★★
          SHEET_URL = "https://docs.google.com/spreadsheets/d/1u_8UrS_D3F6T_fhmIHPeNfaBCzKusTafTzwZGUNsEmQ/edit"
     
-    sheet = client.open_by_url(SHEET_URL).worksheet("工作表1") 
-    # 注意：這裡我強制指定讀取 '工作表1'，確保對應您的 Sheet 名稱
+    sheet = client.open_by_url(SHEET_URL).worksheet("工作表1")
 
 except Exception as e:
     st.error(f"連線設定錯誤：{e}")
     st.stop()
 
 # ==========================================
-# 2. 核心 Prompt (V60: 醫療去F欄 + 禁止補腦死胎)
+# 2. 核心 Prompt (V61: 公豬品系 L/D/Y 強效矯正版)
 # ==========================================
 PROMPT_BATCH = """
 你是一個養豬場語音助理。請將語音內容拆解為 JSON Array。
 
 規則：
 1. **事件名稱標準化 (D欄)**：
-   - 關鍵字「超音波」、「測孕」➡ 統一輸出 Event 為 **「超音波」**。
-   - 關鍵字「斷奶」、「離乳」➡ 統一輸出 Event 為 **「離乳」**。
-   - 關鍵字「打針」、「注射」、「治療」、「用藥」➡ 統一輸出 Event 為 **「醫療」**。
+   - 關鍵字「超音波」、「測孕」➡ Event 為 **「超音波」**。
+   - 關鍵字「斷奶」、「離乳」➡ Event 為 **「離乳」**。
+   - 關鍵字「打針」、「注射」、「治療」、「用藥」➡ Event 為 **「醫療」**。
    - 其他標準事件：分娩、配種、死亡。
 
-2. **數值欄位定義 (E欄 Value_E)**：
-   - **配種**：**必須**在此欄填入「配種公豬耳號」或「精液號碼」。
-   - **其他所有事件 (包含醫療)**：此欄必須留空 (Empty String)。
+2. **公豬與精液號碼校正 (重要！)**：
+   - 養豬場常用公豬品系為：**L (Landrace), D (Duroc), Y (Yorkshire)**。
+   - 語音識別常將英文誤判為中文，請依下列規則**強制修正**配種公豬號碼：
+     - **D (杜洛克)**：若聽到「第」、「弟」、「低」、「地」 + 數字 ➡ 改為 **D** + 數字 (例：「第12」➡「D12」)。
+     - **Y (約克夏)**：若聽到「歪」、「外」、「Why」 + 數字 ➡ 改為 **Y** + 數字 (例：「歪50」➡「Y50」)。
+     - **L (藍瑞斯)**：若聽到「艾爾」、「埃」、「A」 + 數字 ➡ 改為 **L** + 數字。
+   - 此修正主要應用於 **配種** 事件的 **Value_E** 欄位。
 
-3. **判讀結果 (J欄 PregnancyResult_J)**：
-   - 僅當事件為「超音波」時填寫 (Yes/No)。
-   - 聽到：Yes、有、有過、有懷孕、OK、+ ➡ 填入 **"Yes"**。
-   - 聽到：No、沒有、沒過、空胎、沒懷孕、- ➡ 填入 **"No"**。
+3. **數值欄位定義 (E欄 Value_E)**：
+   - **配種**：在此欄填入「修正後的公豬號碼」(如 D12, L33, Y9)。
+   - **其他事件**：留空。
 
 4. **備註欄位 (F欄 Notes_F)**：
-   - **醫療**：在此欄填入「藥物名稱」或「劑量」。
+   - **醫療**：填入「藥物名稱」或「劑量」。
    - **超音波**：若 J欄為 "No"，必須加上 "❌ 未懷孕，待發情重配"。
-   - **分娩**：
-     - 只記錄使用者口述的數據 (如"活仔12")。
-     - **嚴格禁止**：若使用者未提到「死胎」、「木乃伊」，**絕對不可**自行添加「死胎0」或類似字眼，該欄位保持單純。
+   - **分娩**：只記錄口述數據 (如"活仔12")，**嚴禁**自行補腦死胎數據。
    - **離乳**：放入「離乳數量」。
-   - **死亡**：放入「死亡原因」或數量。
 
-5. **邏輯判斷**：
+5. **判讀結果 (J欄 PregnancyResult_J)**：
+   - 僅當事件為「超音波」時填寫 (Yes/No)。
+
+6. **邏輯判斷**：
    - 支援多耳號拆解。
-   - 若耳號包含「測試」二字，請保留或去除皆可，以辨識出的數字為主。
    - 未提日期預設今日。
-   - NextStage_G 全部留空字串。
 
 輸出範例：
 [
-  {"Date": "2024-01-01", "EarTag": "101", "Event": "配種", "Value_E": "L12", "Notes_F": "", "NextStage_G": "", "PregnancyResult_J": ""},
-  {"Date": "2024-01-01", "EarTag": "103", "Event": "醫療", "Value_E": "", "Notes_F": "安默西林", "NextStage_G": "", "PregnancyResult_J": ""},
-  {"Date": "2024-01-01", "EarTag": "102", "Event": "分娩", "Value_E": "", "Notes_F": "活仔12頭", "NextStage_G": "", "PregnancyResult_J": ""}
+  {"Date": "2024-01-01", "EarTag": "101", "Event": "配種", "Value_E": "D12", "Notes_F": "", "NextStage_G": "", "PregnancyResult_J": ""},
+  {"Date": "2024-01-01", "EarTag": "102", "Event": "配種", "Value_E": "Y50", "Notes_F": "", "NextStage_G": "", "PregnancyResult_J": ""}
 ]
 直接輸出 JSON。
 """
@@ -100,9 +96,9 @@ PROMPT_BATCH = """
 # ==========================================
 # 3. 介面設計 (UI)
 # ==========================================
-st.set_page_config(page_title="養豬場語音紀錄 V60", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V60 最終版)")
-st.info("模式：點擊錄音 ➡ AI 解析 ➡ 批量上傳")
+st.set_page_config(page_title="養豬場語音紀錄 V61", page_icon="🐖")
+st.title("🐖 養豬場語音紀錄 (V61 公豬辨識版)")
+st.info("模式：點擊錄音 ➡ AI 自動校正 D/L/Y 品系 ➡ 批量上傳")
 
 # 側邊欄
 with st.sidebar:
@@ -131,7 +127,7 @@ user_text = st.text_area(
     "識別結果：", 
     value=st.session_state['user_input_content'], 
     height=100,
-    placeholder="例：測試101號配種L12，測試103號打針安默西林..."
+    placeholder="例：測試101號配種第12 (AI會自動改成D12)..."
 )
 
 if user_text != st.session_state['user_input_content']:
@@ -142,9 +138,8 @@ if st.button("🤖 AI 解析", type="primary"):
     if not user_text:
         st.warning("請先錄音或輸入內容")
     else:
-        with st.spinner("AI 正在解析並處理資料..."):
+        with st.spinner("AI 正在解析並校正公豬號碼..."):
             try:
-                # 設定台北時區
                 taipei_tz = pytz.timezone('Asia/Taipei')
                 today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
                 
@@ -155,7 +150,7 @@ if st.button("🤖 AI 解析", type="primary"):
                 
                 df = pd.DataFrame(data_list)
                 
-                # --- 自動計算邏輯 (配種預產期) ---
+                # --- 自動計算邏輯 ---
                 if 'NextStage_G' not in df.columns: df['NextStage_G'] = ""
                 if 'PregnancyResult_J' not in df.columns: df['PregnancyResult_J'] = ""
 
@@ -212,7 +207,7 @@ if 'batch_data' in st.session_state:
                         one_row = [
                             current_time, 
                             str(row['Date']), 
-                            str(row['EarTag']), # 確保上傳時轉為文字字串
+                            str(row['EarTag']), 
                             str(row['Event']), 
                             str(row['Value_E']), 
                             str(row['Notes_F']), 
