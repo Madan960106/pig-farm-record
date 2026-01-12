@@ -21,7 +21,7 @@ try:
     
     if api_key:
         genai.configure(api_key=api_key)
-        # 🟢【修正】改用最經典穩定的 gemini-pro 模型，解決 404 錯誤
+        # 🟢【穩定化策略】使用 0.7.2 版本最支援的標準模型，確保不再報錯
         model = genai.GenerativeModel('gemini-pro') 
     else:
         st.error("❌ 找不到 GEMINI_API_KEY")
@@ -40,7 +40,6 @@ try:
     if "SHEET_CONFIG" in st.secrets and "sheet_url" in st.secrets["SHEET_CONFIG"]:
          SHEET_URL = st.secrets["SHEET_CONFIG"]["sheet_url"]
     else:
-         # 預設網址
          SHEET_URL = "https://docs.google.com/spreadsheets/d/1u_8UrS_D3F6T_fhmIHPeNfaBCzKusTafTzwZGUNsEmQ/edit"
     
     # 指定開啟工作表1
@@ -51,7 +50,7 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. 核心 Prompt (V61.3: 穩定的 Pro 版 + 公豬辨識)
+# 2. 核心 Prompt (V61.5: 穩定版+公豬辨識)
 # ==========================================
 PROMPT_BATCH = """
 你是一個養豬場語音助理。請將語音內容拆解為 JSON Array。
@@ -100,7 +99,7 @@ PROMPT_BATCH = """
 # 3. 介面設計 (UI)
 # ==========================================
 st.set_page_config(page_title="養豬場語音紀錄 V61", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V61 Pro穩定版)")
+st.title("🐖 養豬場語音紀錄 (V61 穩定版)")
 st.info("模式：點擊錄音 ➡ AI 自動校正 D/L/Y 品系 ➡ 批量上傳")
 
 # 側邊欄
