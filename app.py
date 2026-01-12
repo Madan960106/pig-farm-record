@@ -9,44 +9,53 @@ from oauth2client.service_account import ServiceAccountCredentials
 from streamlit_mic_recorder import speech_to_text
 
 # ==========================================
-# 1. 雲端版連線設定
+# 1. 雲端版連線設定 (讀取 Secrets)
 # ==========================================
 try:
     # --- A. 設定 Gemini API Key ---
     api_key = None
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
-    elif "gcp_service_account" in st.secrets and "GEMINI_API_KEY" in st.secrets["gcp_service_account"]:
-        api_key = st.secrets["gcp_service_account"]["GEMINI_API_KEY"]
     
     if api_key:
         genai.configure(api_key=api_key)
-        # 🟢【穩定化策略】使用 0.7.2 版本最支援的標準模型，確保不再報錯
+        # 🟢【穩定版核心】使用 gemini-pro，配合 0.7.2 版套件，確保穩定不報錯
         model = genai.GenerativeModel('gemini-pro') 
     else:
-        st.error("❌ 找不到 GEMINI_API_KEY")
+        st.error("❌ 找不到 GEMINI_API_KEY，請檢查 Secrets 設定。")
         st.stop()
 
     # --- B. 連接 Google Sheet ---
+    # 優先讀取 secrets 裡的 gcp_service_account 區塊
     if "gcp_service_account" in st.secrets:
-        creds_dict = st.secrets["gcp_service_account"]
+        creds_dict = dict(st.secrets["gcp_service_account"])
     else:
-        creds_dict = dict(st.secrets)
+        st.error("❌ 找不到 gcp_service_account 設定，請檢查 Secrets。")
+        st.stop()
 
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
     
+    # --- C. 開啟試算表 ---
+    # 嘗試從 Secrets 讀取網址 (sheet_url) 或名稱 (sheet_name)
+    sheet_url = None
     if "SHEET_CONFIG" in st.secrets and "sheet_url" in st.secrets["SHEET_CONFIG"]:
-         SHEET_URL = st.secrets["SHEET_CONFIG"]["sheet_url"]
-    else:
-         SHEET_URL = "https://docs.google.com/spreadsheets/d/1u_8UrS_D3F6T_fhmIHPeNfaBCzKusTafTzwZGUNsEmQ/edit"
+         sheet_url = st.secrets["SHEET_CONFIG"]["sheet_url"]
     
-    # 指定開啟工作表1
-    sheet = client.open_by_url(SHEET_URL).worksheet("工作表1")
+    # 如果有網址就用網址開，沒有就用預設名稱開 (建議用網址最準)
+    if sheet_url:
+        sheet = client.open_by_url(sheet_url).worksheet("工作表1")
+    else:
+        # 預設開啟名稱 (若您改過檔名，這裡要跟著改)
+        sheet_name = "2026母豬紀錄表" 
+        if "SHEET_CONFIG" in st.secrets and "sheet_name" in st.secrets["SHEET_CONFIG"]:
+             sheet_name = st.secrets["SHEET_CONFIG"]["sheet_name"]
+        sheet = client.open(sheet_name).worksheet("工作表1")
 
 except Exception as e:
     st.error(f"連線設定錯誤：{e}")
+    st.info("💡 提示：請檢查 Secrets 內容是否與 JSON 檔一致，且試算表名稱正確。")
     st.stop()
 
 # ==========================================
