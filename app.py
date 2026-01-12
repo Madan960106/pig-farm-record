@@ -50,15 +50,19 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. AI 核心函式 (Direct API - Pro版)
+# 2. AI 核心函式 (全自動輪盤版)
 # ==========================================
-def call_gemini_api(prompt_text):
+def call_gemini_api_auto_switch(prompt_text):
     """
-    使用 Requests 直接呼叫 Gemini API，避開 Python 套件版本問題。
-    修正：改用 gemini-pro 以確保相容性。
+    自動嘗試多種 Gemini 模型，直到成功為止。
+    解決 404 Model Not Found 的終極方案。
     """
-    # 🟢 修正點：將模型改回 gemini-pro，解決 404 問題
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}"
+    # 優先順序：Flash (快) -> Pro (強) -> 2.0 (新)
+    models_to_try = [
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash-exp"
+    ]
     
     headers = {"Content-Type": "application/json"}
     payload = {
@@ -66,17 +70,31 @@ def call_gemini_api(prompt_text):
             "parts": [{"text": prompt_text}]
         }]
     }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        response.raise_for_status() 
-        
-        result = response.json()
-        return result['candidates'][0]['content']['parts'][0]['text']
-        
-    except Exception as e:
-        st.error(f"AI 連線失敗: {e}")
-        return None
+
+    last_error = ""
+
+    for model_name in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+        try:
+            # 嘗試發送請求
+            response = requests.post(url, headers=headers, json=payload)
+            
+            # 如果成功 (200 OK)，直接回傳結果並跳出迴圈
+            if response.status_code == 200:
+                result = response.json()
+                return result['candidates'][0]['content']['parts'][0]['text']
+            else:
+                # 紀錄錯誤但繼續嘗試下一個
+                last_error = f"模型 {model_name} 失敗: {response.status_code} - {response.text}"
+                continue
+                
+        except Exception as e:
+            last_error = f"連線錯誤: {e}"
+            continue
+
+    # 如果全部都失敗，才顯示錯誤
+    st.error(f"❌ 所有 AI 模型都嘗試失敗。最後一次錯誤：\n{last_error}")
+    return None
 
 # ==========================================
 # 3. Prompt 設定
@@ -128,8 +146,8 @@ PROMPT_BATCH = """
 # 4. 介面設計 (UI)
 # ==========================================
 st.set_page_config(page_title="養豬場語音紀錄 V61", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V61 Direct-Pro版)")
-st.info("模式：點擊錄音 ➡ AI 自動校正 D/L/Y 品系 ➡ 批量上傳")
+st.title("🐖 養豬場語音紀錄 (V61 自動輪盤版)")
+st.info("模式：點擊錄音 ➡ AI 自動尋找可用模型 ➡ 批量上傳")
 
 # 側邊欄
 with st.sidebar:
@@ -169,13 +187,15 @@ if st.button("🤖 AI 解析", type="primary"):
     if not user_text:
         st.warning("請先錄音或輸入內容")
     else:
-        with st.spinner("AI 正在解析並校正公豬號碼..."):
+        with st.spinner("AI 正在尋找可用模型並解析..."):
             try:
                 taipei_tz = pytz.timezone('Asia/Taipei')
                 today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
                 
                 full_prompt = f"{PROMPT_BATCH}\n今天是 {today_date}。內容：{user_text}"
-                ai_response_text = call_gemini_api(full_prompt)
+                
+                # 呼叫新的自動切換函式
+                ai_response_text = call_gemini_api_auto_switch(full_prompt)
                 
                 if ai_response_text:
                     cleaned_text = ai_response_text.replace("```json", "").replace("```", "").strip()
@@ -183,6 +203,7 @@ if st.button("🤖 AI 解析", type="primary"):
                     
                     df = pd.DataFrame(data_list)
                     
+                    # --- 自動計算邏輯 ---
                     if 'NextStage_G' not in df.columns: df['NextStage_G'] = ""
                     if 'PregnancyResult_J' not in df.columns: df['PregnancyResult_J'] = ""
 
@@ -195,9 +216,11 @@ if st.button("🤖 AI 解析", type="primary"):
                                 df.at[index, 'NextStage_G'] = f"測孕:{check_date.strftime('%m/%d')} 預產:{due_date.strftime('%m/%d')}"
                             except: pass
                     
+                    # 補上 UI 欄位
                     df['Operator_I'] = operator
                     df['Zone_H'] = zone
                     
+                    # 欄位順序確保
                     expected_cols = ['Date', 'EarTag', 'Event', 'Value_E', 'Notes_F', 'NextStage_G', 'Zone_H', 'Operator_I', 'PregnancyResult_J']
                     for c in expected_cols:
                         if c not in df.columns:
@@ -208,7 +231,7 @@ if st.button("🤖 AI 解析", type="primary"):
                     st.success(f"成功辨識 {len(df)} 筆資料！")
                 
             except Exception as e:
-                st.error(f"解析失敗：{e}")
+                st.error(f"解析失敗，請檢查資料格式: {e}")
 
 # ==========================================
 # 5. 確認與上傳區
