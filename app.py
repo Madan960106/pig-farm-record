@@ -13,6 +13,7 @@ from streamlit_mic_recorder import speech_to_text
 # ==========================================
 try:
     # --- A. 設定 Google AI SDK ---
+    api_key = None
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
         genai.configure(api_key=api_key)
@@ -49,28 +50,71 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. AI 核心函式 (官方 SDK 穩定版)
+# 2. AI 核心函式 (V67: SDK 自動偵測版)
 # ==========================================
-def call_gemini_api_official(prompt_text):
+def get_best_available_model():
     """
-    使用 Google 官方 SDK (google-generativeai) 呼叫 AI。
-    由 SDK 自動處理 v1/v1beta 通道問題，最為穩定。
+    使用 SDK 查詢該 Key 目前可用的所有模型，並自動選擇最適合的一個。
+    不再盲猜模型名稱。
     """
     try:
-        # 優先嘗試標準版 1.5 Flash
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # 1. 列出所有模型
+        all_models = list(genai.list_models())
+        
+        # 2. 篩選出支援 'generateContent' 的模型
+        capable_models = []
+        for m in all_models:
+            if 'generateContent' in m.supported_generation_methods:
+                capable_models.append(m.name)
+        
+        if not capable_models:
+            return None, "此 API Key 權限下沒有找到任何支援生成的模型。"
+
+        # 3. 智慧排序：優先找 Flash -> Pro -> 1.0
+        # Google 回傳的名稱通常是 'models/gemini-1.5-flash' 格式
+        priority_keywords = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
+        
+        selected_model = None
+        
+        # 先找完全符合關鍵字的
+        for keyword in priority_keywords:
+            for model_name in capable_models:
+                if keyword in model_name and "latest" not in model_name: # 避開 latest 有時候不穩
+                    selected_model = model_name
+                    break
+            if selected_model: break
+            
+        # 如果都沒選到，就直接拿第一個能用的
+        if not selected_model:
+            selected_model = capable_models[0]
+            
+        return selected_model, capable_models
+
+    except Exception as e:
+        return None, f"偵測模型列表失敗: {str(e)}"
+
+def call_gemini_api_auto(prompt_text):
+    """
+    先偵測，再執行。
+    """
+    # 步驟 1: 自動取得可用模型
+    model_name, debug_info = get_best_available_model()
+    
+    if not model_name:
+        st.error(f"❌ 無法找到可用模型。錯誤：{debug_info}")
+        return None
+        
+    try:
+        # 步驟 2: 使用該模型
+        # st.toast(f"🤖 自動選用模型：{model_name}") # 測試時可開啟
+        model = genai.GenerativeModel(model_name)
         response = model.generate_content(prompt_text)
         return response.text
     except Exception as e:
-        # 如果 1.5 失敗，嘗試 fallback 到最舊最穩的 gemini-pro
-        try:
-            print(f"1.5 Flash failed: {e}, switching to Pro")
-            model = genai.GenerativeModel('gemini-pro')
-            response = model.generate_content(prompt_text)
-            return response.text
-        except Exception as e2:
-            st.error(f"AI 連線失敗 (所有模型): {e2}")
-            return None
+        st.error(f"AI 連線失敗 (模型 {model_name}): {e}")
+        # 如果真的失敗，印出所有可用列表幫助除錯
+        st.warning(f"💡 您的帳號可用模型列表為：{debug_info}")
+        return None
 
 # ==========================================
 # 3. Prompt 設定
@@ -121,9 +165,9 @@ PROMPT_BATCH = """
 # ==========================================
 # 4. 介面設計 (UI)
 # ==========================================
-st.set_page_config(page_title="養豬場語音紀錄 (官方穩定版)", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (官方穩定版)")
-st.info("模式：回歸 Google 官方 SDK ➡ 確保最大相容性")
+st.set_page_config(page_title="養豬場語音紀錄 V67", page_icon="🐖")
+st.title("🐖 養豬場語音紀錄 (V67 SDK偵測版)")
+st.info("模式：官方 SDK 自動偵測可用模型 ➡ 解決 404 問題")
 
 # 側邊欄
 with st.sidebar:
@@ -163,15 +207,15 @@ if st.button("🤖 AI 解析", type="primary"):
     if not user_text:
         st.warning("請先錄音或輸入內容")
     else:
-        with st.spinner("AI 解析中 (使用官方通道)..."):
+        with st.spinner("SDK 正在掃描帳號模型權限..."):
             try:
                 taipei_tz = pytz.timezone('Asia/Taipei')
                 today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
                 
                 full_prompt = f"{PROMPT_BATCH}\n今天是 {today_date}。內容：{user_text}"
                 
-                # 呼叫官方 SDK 函式
-                ai_response_text = call_gemini_api_official(full_prompt)
+                # 呼叫 V67 自動偵測函式
+                ai_response_text = call_gemini_api_auto(full_prompt)
                 
                 if ai_response_text:
                     cleaned_text = ai_response_text.replace("```json", "").replace("```", "").strip()
