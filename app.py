@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import json
-import requests
+import google.generativeai as genai
 from datetime import datetime, timedelta
 import pytz
 import gspread
@@ -12,12 +12,11 @@ from streamlit_mic_recorder import speech_to_text
 # 1. 雲端版連線設定
 # ==========================================
 try:
-    # --- A. 取得 API Key ---
-    api_key = None
+    # --- A. 設定 Google AI SDK ---
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
-    
-    if not api_key:
+        genai.configure(api_key=api_key)
+    else:
         st.error("❌ 找不到 GEMINI_API_KEY，請檢查 Secrets 設定。")
         st.stop()
 
@@ -50,97 +49,28 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. AI 核心函式 (V66: 自動偵測模型版)
+# 2. AI 核心函式 (官方 SDK 穩定版)
 # ==========================================
-def get_valid_model_name():
+def call_gemini_api_official(prompt_text):
     """
-    不猜測模型名稱，直接向 Google 查詢此 Key 可用的模型列表。
-    優先選擇 1.5 Flash，其次 Pro，最後 Legacy。
+    使用 Google 官方 SDK (google-generativeai) 呼叫 AI。
+    由 SDK 自動處理 v1/v1beta 通道問題，最為穩定。
     """
-    list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
     try:
-        response = requests.get(list_url)
-        if response.status_code != 200:
-            st.error(f"無法獲取模型列表 (代碼 {response.status_code})。請確認 API Key 是否有效。")
-            return None
-        
-        data = response.json()
-        if 'models' not in data:
-            st.error("API 回傳資料異常，找不到模型清單。")
-            return None
-            
-        # 篩選出支援 generateContent 的模型
-        available_models = []
-        for m in data['models']:
-            if 'generateContent' in m.get('supportedGenerationMethods', []):
-                # 排除已知的額度陷阱 (2.0-flash-exp 對新帳號 limit=0)
-                if "gemini-2.0-flash-exp" not in m['name']:
-                    available_models.append(m['name'])
-        
-        if not available_models:
-            st.error("您的 API Key 權限下沒有任何可用的生成式模型。")
-            return None
-            
-        # --- 智慧選擇邏輯 ---
-        # 優先順序：1.5-flash > 1.5-pro > 1.0 > 其他
-        preferred_order = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
-        
-        # 1. 先找完全符合的
-        for pref in preferred_order:
-            for avail in available_models:
-                if avail.endswith(pref): # 例如 models/gemini-1.5-flash
-                    return avail
-        
-        # 2. 沒找到完美匹配，找包含關鍵字的 (例如 gemini-1.5-flash-001)
-        for pref in preferred_order:
-            for avail in available_models:
-                if pref in avail:
-                    return avail
-                    
-        # 3. 真的都沒有，就回傳第一個抓到的
-        return available_models[0]
-
+        # 優先嘗試標準版 1.5 Flash
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        response = model.generate_content(prompt_text)
+        return response.text
     except Exception as e:
-        st.error(f"模型偵測失敗: {e}")
-        return None
-
-def call_gemini_api_smart(prompt_text):
-    """
-    先偵測，再呼叫。
-    """
-    # 步驟 1: 獲取正確的模型名稱
-    model_name = get_valid_model_name()
-    if not model_name:
-        return None
-        
-    # 步驟 2: 使用該模型進行連線
-    # 注意：list_models 回傳的 name 通常是 'models/gemini-...' 格式
-    clean_model_name = model_name.replace("models/", "")
-    
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model_name}:generateContent?key={api_key}"
-    
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt_text}]
-        }]
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload)
-        
-        if response.status_code == 200:
-            result = response.json()
-            # 成功時，顯示一下到底用了哪個模型 (方便除錯)
-            st.toast(f"✅ 成功！使用自動偵測模型：{clean_model_name}")
-            return result['candidates'][0]['content']['parts'][0]['text']
-        else:
-            st.error(f"連線錯誤 ({response.status_code}): {response.text}")
+        # 如果 1.5 失敗，嘗試 fallback 到最舊最穩的 gemini-pro
+        try:
+            print(f"1.5 Flash failed: {e}, switching to Pro")
+            model = genai.GenerativeModel('gemini-pro')
+            response = model.generate_content(prompt_text)
+            return response.text
+        except Exception as e2:
+            st.error(f"AI 連線失敗 (所有模型): {e2}")
             return None
-            
-    except Exception as e:
-        st.error(f"連線異常: {e}")
-        return None
 
 # ==========================================
 # 3. Prompt 設定
@@ -191,9 +121,9 @@ PROMPT_BATCH = """
 # ==========================================
 # 4. 介面設計 (UI)
 # ==========================================
-st.set_page_config(page_title="養豬場語音紀錄 V66", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V66 自動偵測版)")
-st.info("模式：點擊錄音 ➡ AI 自動偵測可用模型 ➡ 批量上傳")
+st.set_page_config(page_title="養豬場語音紀錄 (官方穩定版)", page_icon="🐖")
+st.title("🐖 養豬場語音紀錄 (官方穩定版)")
+st.info("模式：回歸 Google 官方 SDK ➡ 確保最大相容性")
 
 # 側邊欄
 with st.sidebar:
@@ -233,15 +163,15 @@ if st.button("🤖 AI 解析", type="primary"):
     if not user_text:
         st.warning("請先錄音或輸入內容")
     else:
-        with st.spinner("AI 正在向 Google 查詢可用模型..."):
+        with st.spinner("AI 解析中 (使用官方通道)..."):
             try:
                 taipei_tz = pytz.timezone('Asia/Taipei')
                 today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
                 
                 full_prompt = f"{PROMPT_BATCH}\n今天是 {today_date}。內容：{user_text}"
                 
-                # 呼叫 V66 自動偵測函式
-                ai_response_text = call_gemini_api_smart(full_prompt)
+                # 呼叫官方 SDK 函式
+                ai_response_text = call_gemini_api_official(full_prompt)
                 
                 if ai_response_text:
                     cleaned_text = ai_response_text.replace("```json", "").replace("```", "").strip()
