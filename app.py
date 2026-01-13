@@ -50,18 +50,18 @@ except Exception as e:
     st.stop()
 
 # ==========================================
-# 2. AI 核心函式 (V63: 全自動掃描版)
+# 2. AI 核心函式 (V64: 不死心掃描版)
 # ==========================================
 def call_gemini_api_auto(prompt_text):
     """
-    自動掃描 4 種模型，找到可用的那個。
+    自動掃描多種模型，遇到 429 也不放棄，直到試完所有可能性。
     """
-    # 候選名單：依序嘗試，直到成功
+    # 候選名單：調整順序，將最穩定的標準版放前面
     models_to_try = [
-        "gemini-1.5-pro",       # 新帳號機率最高
-        "gemini-2.0-flash-exp", # 最新版
-        "gemini-1.5-flash",     # 標準版
-        "gemini-pro"            # 舊版
+        "gemini-1.5-flash",     # 首選：最快、額度最寬鬆
+        "gemini-1.5-pro",       # 次選：能力最強
+        "gemini-2.0-flash-exp", # 備選：最新實驗版 (容易塞車)
+        "gemini-pro"            # 最後手段：舊版
     ]
     
     headers = {"Content-Type": "application/json"}
@@ -72,36 +72,41 @@ def call_gemini_api_auto(prompt_text):
     }
 
     last_error_msg = ""
+    success_model = None
 
     for model_name in models_to_try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         try:
+            # 嘗試連線
             response = requests.post(url, headers=headers, json=payload)
             
-            # 如果成功 (200 OK)
+            # 情況 1: 成功 (200)
             if response.status_code == 200:
                 result = response.json()
-                # 成功後，偷偷告訴使用者是哪個模型通了 (顯示在 Toast)
+                success_model = model_name
+                # 找到能用的就立刻回傳，不繼續試了
                 st.toast(f"✅ 連線成功！使用模型：{model_name}")
                 return result['candidates'][0]['content']['parts'][0]['text']
             
-            # 如果是 429 (額度滿)，這很嚴重，直接報錯
-            elif response.status_code == 429:
-                st.error(f"⛔ 額度限制 (429) - 模型 {model_name}。")
-                last_error_msg = "您的 API Key 額度已滿，請確認是否為新專案。"
-                break # 額度滿了換模型也沒用，直接跳出
-            
-            # 其他錯誤 (如 404)，就紀錄一下，繼續試下一個
+            # 情況 2: 失敗 (429 或 404) -> 紀錄錯誤，但「continue」繼續試下一個！
             else:
-                last_error_msg += f"\n❌ {model_name}: {response.status_code}"
-                continue
+                error_detail = response.text
+                if response.status_code == 429:
+                    error_short = "額度滿/忙碌中"
+                elif response.status_code == 404:
+                    error_short = "模型未找到"
+                else:
+                    error_short = f"錯誤 {response.status_code}"
+                
+                last_error_msg += f"\n🔸 {model_name}: {error_short}"
+                continue # 關鍵修正：絕對不 Break，繼續試下一個模型！
                 
         except Exception as e:
-            last_error_msg += f"\n⚠️ 連線異常: {e}"
+            last_error_msg += f"\n⚠️ {model_name}: 連線異常 ({e})"
             continue
 
-    # 如果迴圈跑完都沒回傳，代表全軍覆沒
-    st.error(f"所有模型都嘗試失敗，請檢查 API Key 是否正確。\n除錯紀錄：{last_error_msg}")
+    # 如果程式跑到這裡，代表所有模型都試過了還是全掛
+    st.error(f"❌ 所有 AI 模型都嘗試失敗。\n詳細紀錄：{last_error_msg}\n\n請確認 Secrets 中的 API Key 是否正確設定為新專案的 Key。")
     return None
 
 # ==========================================
@@ -153,9 +158,9 @@ PROMPT_BATCH = """
 # ==========================================
 # 4. 介面設計 (UI)
 # ==========================================
-st.set_page_config(page_title="養豬場語音紀錄 V63", page_icon="🐖")
-st.title("🐖 養豬場語音紀錄 (V63 掃描版)")
-st.info("模式：點擊錄音 ➡ AI 自動掃描可用模型 ➡ 批量上傳")
+st.set_page_config(page_title="養豬場語音紀錄 V64", page_icon="🐖")
+st.title("🐖 養豬場語音紀錄 (V64 不死心版)")
+st.info("模式：點擊錄音 ➡ AI 自動掃描所有模型 ➡ 批量上傳")
 
 # 側邊欄
 with st.sidebar:
@@ -195,14 +200,14 @@ if st.button("🤖 AI 解析", type="primary"):
     if not user_text:
         st.warning("請先錄音或輸入內容")
     else:
-        with st.spinner("AI 正在掃描可用模型並解析..."):
+        with st.spinner("AI 正在掃描可用模型 (遇錯自動跳過)..."):
             try:
                 taipei_tz = pytz.timezone('Asia/Taipei')
                 today_date = datetime.now(taipei_tz).strftime('%Y-%m-%d')
                 
                 full_prompt = f"{PROMPT_BATCH}\n今天是 {today_date}。內容：{user_text}"
                 
-                # 呼叫 V63 自動掃描函式
+                # 呼叫 V64 自動掃描函式
                 ai_response_text = call_gemini_api_auto(full_prompt)
                 
                 if ai_response_text:
